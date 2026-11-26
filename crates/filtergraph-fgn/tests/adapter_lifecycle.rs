@@ -43,8 +43,16 @@ impl Instance {
     }
 
     fn from_descriptor(descriptor: abi::Descriptor, configuration: &CStr) -> Result<Self, i32> {
+        Self::with_executor(descriptor, configuration, executor())
+    }
+
+    fn with_executor(
+        descriptor: abi::Descriptor,
+        configuration: &CStr,
+        executor: abi::Executor,
+    ) -> Result<Self, i32> {
         let descriptor = Box::new(descriptor);
-        let executor = Box::new(executor());
+        let executor = Box::new(executor);
         let mut data = null_mut();
         // Both immutable tables remain at stable addresses through cleanup.
         let status = unsafe {
@@ -623,24 +631,6 @@ fn topology_independent_declaration_projects_ports_and_uses_typed_buffers() {
     check_parameter_publication(&instance, Ports::GAIN.port(), &mut [4.0, 0.0]);
 
     let mut result = [9.0; 2];
-    with_buffer(
-        &mut result,
-        instance.format(1).unwrap(),
-        Some(0),
-        |output| {
-            with_buffer(
-                &mut [2.0, 3.0],
-                instance.format(0).unwrap(),
-                Some(45),
-                |input| {
-                    assert_eq!(
-                        unsafe { instance.process(&[input, DISCONNECTED], &mut [output]) },
-                        0
-                    );
-                },
-            );
-        },
-    );
     let (size, sequence) = with_buffer(
         &mut result,
         instance.format(1).unwrap(),
@@ -1095,4 +1085,80 @@ fn short_output_and_misaligned_input_do_not_publish_or_advance_history() {
         });
     });
     assert_eq!(result, [6.0, 4.0]);
+}
+
+#[cfg(not(feature = "blas"))]
+#[test]
+fn dense_host_executor_failure_does_not_publish_a_frame_and_can_recover() {
+    use core::cell::Cell;
+    use filtergraph_algorithms::PyramidPupilReconstructorF32;
+    use filtergraph_fgn::{AlgorithmInstance, descriptor_with};
+
+    struct DenseExecutor {
+        result: Cell<i32>,
+        calls: Cell<u32>,
+    }
+    unsafe extern "C" fn dense(data: *mut c_void, task: *const abi::DenseF32Task) -> i32 {
+        // The synchronous fixture owns the executor state. The adapter lends
+        // aligned task storage and owns the admitted matrix and frame views.
+        let (host, task) = unsafe { (&*data.cast::<DenseExecutor>(), &*task) };
+        host.calls.set(host.calls.get() + 1);
+        if host.result.get() < 0 {
+            return host.result.get();
+        }
+        if (task.n_rows, task.n_columns, task.flags) != (1, 4, 0) {
+            return -abi::EINVAL;
+        }
+        let coefficients = unsafe { core::slice::from_raw_parts(task.matrix, 4) };
+        let input = unsafe { core::slice::from_raw_parts(task.input, 4) };
+        unsafe {
+            *task.output = if host.result.get() == 1 {
+                f32::NAN
+            } else {
+                coefficients.iter().zip(input).map(|(a, b)| a * b).sum()
+            };
+        }
+        0
+    }
+    static PORTS: [abi::PortInfo; 3] = [
+        abi::PortInfo::new(0, abi::DIRECTION_INPUT, 0, c"pixels".as_ptr()),
+        abi::PortInfo::new(1, abi::DIRECTION_OUTPUT, 0, c"reconstructed".as_ptr()),
+        abi::PortInfo::new(
+            2,
+            abi::DIRECTION_INPUT,
+            abi::PORT_PARAMETER | abi::PORT_OPTIONAL,
+            c"reconstructor".as_ptr(),
+        ),
+    ];
+    let mut host = DenseExecutor {
+        result: Cell::new(0),
+        calls: Cell::new(0),
+    };
+    let instance = Instance::with_executor(
+        descriptor_with::<AlgorithmInstance<PyramidPupilReconstructorF32>>(
+            c"pyramid-pupil-reconstructor-f32".as_ptr(), 3, PORTS.as_ptr(),
+        ),
+        c"{\"reconstructed_count\":1,\"selected_pixel_count\":1,\"initial_reconstructor\":[1.0,2.0,3.0,4.0],\"reconstructed_schema\":\"test/modes/1\"}",
+        abi::Executor { run_dense_f32: Some(dense), data: (&raw mut host).cast(), ..executor() },
+    ).unwrap();
+    let mut output = [17.0];
+    for (mut samples, result, expected, bytes, calls) in [
+        ([f32::NAN, 2.0, 3.0, 4.0], 0, -abi::EINVAL, 0, 0),
+        ([1.0, 2.0, 3.0, 4.0], -abi::ENOMEM, -abi::ENOMEM, 0, 1),
+        ([1.0, 2.0, 3.0, 4.0], 1, -abi::EINVAL, 0, 2),
+        ([1.0, 2.0, 3.0, 4.0], 0, 0, 4, 3),
+    ] {
+        host.result.set(result);
+        let (size, _) = with_buffer(&mut output, instance.format(1).unwrap(), None, |output| {
+            with_buffer(&mut samples, instance.format(0).unwrap(), None, |input| {
+                assert_eq!(
+                    unsafe { instance.process(&[input, DISCONNECTED], &mut [output]) },
+                    expected
+                );
+            });
+        });
+        assert_eq!(size, bytes);
+        assert_eq!(host.calls.get(), calls);
+    }
+    assert_eq!(output, [30.0]);
 }

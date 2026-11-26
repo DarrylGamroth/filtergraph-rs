@@ -292,67 +292,78 @@ fn extent_errors_preserve_outputs_and_retained_history() {
     .unwrap();
     let committed = workspace.clone();
 
+    use ChoppedImageDifferenceError::*;
     difference = [7.0; 2];
     validity = [true; 2];
     status = ChoppedImageDifferenceStatus::Complete;
-    assert_eq!(
-        plan.process(
-            ChoppedImageDifferenceOutput::new(&mut difference, &mut validity, &mut status),
-            &mut workspace,
-            ChoppedImageDifferenceInput::new(ChoppedImageKind::Unfringed, &[0.0], &[true; 2],),
+    for (image_len, flags_len, out_len, valid_len, expected, detail) in [
+        (
+            1,
+            2,
+            2,
+            2,
+            ImageExtent {
+                expected: 2,
+                actual: 1,
+            },
+            "image extent 1",
         ),
-        Err(ChoppedImageDifferenceError::ImageExtent {
-            expected: 2,
-            actual: 1,
-        })
-    );
-    assert_eq!(workspace, committed);
-    assert_eq!(difference, [7.0; 2]);
-    assert_eq!(validity, [true; 2]);
-    assert_eq!(status, ChoppedImageDifferenceStatus::Complete);
-
-    assert_eq!(
-        plan.process(
-            ChoppedImageDifferenceOutput::new(&mut difference, &mut validity, &mut status),
-            &mut workspace,
-            ChoppedImageDifferenceInput::new(ChoppedImageKind::Unfringed, &[0.0; 2], &[true],),
+        (
+            2,
+            1,
+            2,
+            2,
+            InputValidityExtent {
+                expected: 2,
+                actual: 1,
+            },
+            "input validity extent 1",
         ),
-        Err(ChoppedImageDifferenceError::InputValidityExtent {
-            expected: 2,
-            actual: 1,
-        })
-    );
-    assert_eq!(workspace, committed);
-
-    let mut short_difference = [8.0];
-    assert_eq!(
-        plan.process(
-            ChoppedImageDifferenceOutput::new(&mut short_difference, &mut validity, &mut status,),
-            &mut workspace,
-            ChoppedImageDifferenceInput::new(ChoppedImageKind::Unfringed, &[0.0; 2], &[true; 2],),
+        (
+            2,
+            2,
+            1,
+            2,
+            DifferenceExtent {
+                expected: 2,
+                actual: 1,
+            },
+            "difference extent 1",
         ),
-        Err(ChoppedImageDifferenceError::DifferenceExtent {
-            expected: 2,
-            actual: 1,
-        })
-    );
-    assert_eq!(short_difference, [8.0]);
-    assert_eq!(workspace, committed);
-
-    let mut short_validity = [false];
-    assert_eq!(
-        plan.process(
-            ChoppedImageDifferenceOutput::new(&mut difference, &mut short_validity, &mut status,),
-            &mut workspace,
-            ChoppedImageDifferenceInput::new(ChoppedImageKind::Unfringed, &[0.0; 2], &[true; 2],),
+        (
+            2,
+            2,
+            2,
+            1,
+            OutputValidityExtent {
+                expected: 2,
+                actual: 1,
+            },
+            "output validity extent 1",
         ),
-        Err(ChoppedImageDifferenceError::OutputValidityExtent {
-            expected: 2,
-            actual: 1,
-        })
-    );
-    assert_eq!(short_validity, [false]);
-    assert_eq!(workspace, committed);
+    ] {
+        let error = plan
+            .process(
+                ChoppedImageDifferenceOutput::new(
+                    &mut difference[..out_len],
+                    &mut validity[..valid_len],
+                    &mut status,
+                ),
+                &mut workspace,
+                ChoppedImageDifferenceInput::new(
+                    ChoppedImageKind::Unfringed,
+                    &[0.0; 2][..image_len],
+                    &[true; 2][..flags_len],
+                ),
+            )
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(workspace, committed);
+        assert_eq!(difference, [7.0; 2]);
+        assert_eq!(validity, [true; 2]);
+        assert_eq!(status, ChoppedImageDifferenceStatus::Complete);
+    }
 }
 
 #[test]

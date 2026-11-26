@@ -172,3 +172,70 @@ fn physical_actuator_preparation_reports_initial_state_and_selected_limit_failur
         assert_eq!(plan.workspace(&[0.0, 0.0]).unwrap().current(), [0.0; 2]);
     }
 }
+
+#[test]
+fn rejected_actuator_tick_preserves_slew_state_and_both_outputs() {
+    use filtergraph_algorithms::PdmCommandError::*;
+    let plan = PdmCommandPlan::new(
+        Arc::from([-1.0_f32; 2]),
+        Arc::from([1.0; 2]),
+        Some(Arc::from([0.2; 2])),
+    )
+    .unwrap();
+    let other = PdmCommandPlan::new(Arc::from([-1.0_f32]), Arc::from([1.0]), None).unwrap();
+    let mut workspace = plan.workspace(&[0.1, -0.1]).unwrap();
+    let mut wrong_workspace = other.workspace(&[0.0]).unwrap();
+    let mut demanded = [19.0; 2];
+    let mut feedback = [19.0; 2];
+    for (input, nout, wrong, expected, detail) in [
+        (&[1.0][..], 2, false, InputExtent, "input extent"),
+        (&[1.0, -1.0][..], 1, false, OutputExtent, "output extent"),
+        (
+            &[1.0, -1.0][..],
+            2,
+            true,
+            WorkspaceExtent,
+            "workspace extent",
+        ),
+        (
+            &[1.0, f32::NAN][..],
+            2,
+            false,
+            NonFiniteInput,
+            "input must be finite",
+        ),
+    ] {
+        let storage = if wrong {
+            &mut wrong_workspace
+        } else {
+            &mut workspace
+        };
+        let error = plan
+            .process(
+                PdmCommandOutput {
+                    demanded: &mut demanded[..nout],
+                    constraint_feedback: &mut feedback,
+                },
+                storage,
+                PdmCommandInput { requested: input },
+            )
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!((demanded, feedback), ([19.0; 2], [19.0; 2]));
+        assert_eq!(workspace.current(), [0.1, -0.1]);
+    }
+    plan.process(
+        PdmCommandOutput {
+            demanded: &mut demanded,
+            constraint_feedback: &mut feedback,
+        },
+        &mut workspace,
+        PdmCommandInput {
+            requested: &[1.0, -1.0],
+        },
+    )
+    .unwrap();
+    assert_eq!(demanded, [0.3, -0.3]);
+    assert_eq!(feedback, [0.7, -0.7]);
+}

@@ -528,37 +528,54 @@ fn preparation_rejects_every_invalid_criterion_dimension_and_loop_gain() {
             DocrimeConditioningCriteriaError::InvalidMinimumFactorizationPivotRatio,
         ),
     ] {
-        assert_eq!(
-            DocrimeConditioningCriteria::new(minimum_variance, maximum_correlation, minimum_pivot,),
-            Err(expected)
-        );
+        use DocrimeConditioningCriteriaError::*;
+        let error =
+            DocrimeConditioningCriteria::new(minimum_variance, maximum_correlation, minimum_pivot)
+                .unwrap_err();
+        assert_eq!(error, expected);
+        let field = match expected {
+            InvalidMinimumCorrectorVariance => "corrector variance",
+            InvalidMaximumAbsoluteCorrectorCorrelation => "corrector correlation",
+            InvalidMinimumFactorizationPivotRatio => "factorization pivot ratio",
+        };
+        assert!(error.to_string().contains(field), "{error}");
     }
 
+    use DocrimeInteractionMatrixPlanError::*;
     let criteria = DocrimeConditioningCriteria::new(0.1_f32, 0.9, 0.01).unwrap();
-    assert_eq!(
-        DocrimeOpenLoopInteractionMatrixPlan::new(0, 1, criteria),
-        Err(DocrimeInteractionMatrixPlanError::EmptyDimension)
-    );
-    assert_eq!(
-        DocrimeOpenLoopInteractionMatrixPlan::new(1, 0, criteria),
-        Err(DocrimeInteractionMatrixPlanError::EmptyDimension)
-    );
-    assert_eq!(
-        DocrimeOpenLoopInteractionMatrixPlan::new(usize::MAX, 2, criteria),
-        Err(DocrimeInteractionMatrixPlanError::ExtentOverflow {
-            matrix: DocrimeInteractionMatrixKind::MeasurementByCorrector,
-        })
-    );
-    assert_eq!(
-        DocrimeOpenLoopInteractionMatrixPlan::new(1, usize::MAX, criteria),
-        Err(DocrimeInteractionMatrixPlanError::ExtentOverflow {
-            matrix: DocrimeInteractionMatrixKind::CorrectorByCorrector,
-        })
-    );
+    for (measurements, correctors, expected, detail) in [
+        (0, 1, EmptyDimension, "dimensions must be nonzero"),
+        (1, 0, EmptyDimension, "dimensions must be nonzero"),
+        (
+            usize::MAX,
+            2,
+            ExtentOverflow {
+                matrix: DocrimeInteractionMatrixKind::MeasurementByCorrector,
+            },
+            "MeasurementByCorrector matrix extent",
+        ),
+        (
+            1,
+            usize::MAX,
+            ExtentOverflow {
+                matrix: DocrimeInteractionMatrixKind::CorrectorByCorrector,
+            },
+            "CorrectorByCorrector matrix extent",
+        ),
+    ] {
+        let error = DocrimeOpenLoopInteractionMatrixPlan::new(measurements, correctors, criteria)
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
     for loop_gain in [0.0, -0.1, f32::NAN, f32::INFINITY] {
-        assert_eq!(
-            DocrimeClosedLoopInteractionMatrixPlan::new(1, 1, loop_gain, criteria),
-            Err(DocrimeInteractionMatrixPlanError::InvalidLoopGain)
+        let error =
+            DocrimeClosedLoopInteractionMatrixPlan::new(1, 1, loop_gain, criteria).unwrap_err();
+        assert_eq!(error, InvalidLoopGain);
+        assert!(
+            error
+                .to_string()
+                .contains("closed-loop gain must be finite and positive")
         );
     }
 }

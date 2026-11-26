@@ -15,25 +15,35 @@ fn require_output_progress<P: OutputProgress>(_plan: &P) {}
 
 #[test]
 fn preparation_requires_finite_equal_nonempty_arrays() {
-    assert_eq!(
-        PixelCalibrationPlan::<f32, u16>::new(Vec::new(), Vec::new()).unwrap_err(),
-        PixelCalibrationError::Empty
-    );
-    assert_eq!(
-        PixelCalibrationPlan::<f32, u16>::new(vec![1.0, 1.0], vec![0.0]).unwrap_err(),
-        PixelCalibrationError::ExtentMismatch {
-            flat: 2,
-            background: 1,
-        }
-    );
-    assert_eq!(
-        PixelCalibrationPlan::<f32, u16>::new(vec![1.0, f32::NAN], vec![0.0; 2]).unwrap_err(),
-        PixelCalibrationError::NonFiniteFlat { index: 1 }
-    );
-    assert_eq!(
-        PixelCalibrationPlan::<f32, u16>::new(vec![1.0; 2], vec![0.0, f32::INFINITY]).unwrap_err(),
-        PixelCalibrationError::NonFiniteBackground { index: 1 }
-    );
+    use PixelCalibrationError::*;
+    for (flat, background, expected, detail) in [
+        (vec![], vec![], Empty, "arrays must be nonempty"),
+        (
+            vec![1.0; 2],
+            vec![0.0],
+            ExtentMismatch {
+                flat: 2,
+                background: 1,
+            },
+            "flat extent 2 does not match background extent 1",
+        ),
+        (
+            vec![1.0, f32::NAN],
+            vec![0.0; 2],
+            NonFiniteFlat { index: 1 },
+            "flat value at index 1",
+        ),
+        (
+            vec![1.0; 2],
+            vec![0.0, f32::INFINITY],
+            NonFiniteBackground { index: 1 },
+            "background value at index 1",
+        ),
+    ] {
+        let error = PixelCalibrationPlan::<f32, u16>::new(flat, background).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
 }
 
 #[test]
@@ -305,31 +315,39 @@ fn declaration_preserves_mixed_elements_and_named_calibration_planes() {
 
 #[test]
 fn declaration_rejects_overflow_and_initial_plane_mismatches() {
-    assert!(matches!(
-        PixelCalibrationU16F32::prepare(PixelCalibrationU16F32Configuration {
-            initial_flat: None,
+    use PixelCalibrationU16F32PreparationError::*;
+    use core::error::Error;
+    for (image_size, initial_flat, expected, detail) in [
+        (
+            (usize::MAX, 2),
+            None,
+            ImageExtentOverflow,
+            "image extent overflow",
+        ),
+        (
+            (1, 2),
+            Some(vec![1.0]),
+            Calibration(PixelCalibrationError::ExtentMismatch {
+                flat: 1,
+                background: 2,
+            }),
+            "flat extent 1 does not match background extent 2",
+        ),
+    ] {
+        let error = PixelCalibrationU16F32::prepare(PixelCalibrationU16F32Configuration {
+            initial_flat,
             initial_background: None,
-            image_size: (usize::MAX, 2),
-        }),
-        Err(DeclarationPreparationError::Algorithm(
-            PixelCalibrationU16F32PreparationError::ImageExtentOverflow
-        ))
-    ));
-    assert!(matches!(
-        PixelCalibrationU16F32::prepare(PixelCalibrationU16F32Configuration {
-            initial_flat: Some(vec![1.0]),
-            initial_background: Some(vec![0.0; 2]),
-            image_size: (1, 2),
-        }),
-        Err(DeclarationPreparationError::Algorithm(
-            PixelCalibrationU16F32PreparationError::Calibration(
-                PixelCalibrationError::ExtentMismatch {
-                    flat: 1,
-                    background: 2,
-                }
-            )
-        ))
-    ));
+            image_size,
+        })
+        .err()
+        .unwrap();
+        assert_eq!(error, DeclarationPreparationError::Algorithm(expected));
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(
+            expected.source().is_some(),
+            matches!(expected, Calibration(_))
+        );
+    }
 }
 
 #[test]

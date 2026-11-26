@@ -321,25 +321,48 @@ fn invalid_extents_leave_output_unchanged() {
     let mut measurements = [-7.0; 8];
     let mut columns = [77; 8];
     let mut count = [77];
-    assert!(
-        plan.process_block(
-            &mut measurements,
-            &mut columns,
-            &mut count,
-            &mut workspace,
-            &[1.0; COLUMNS - 1],
-            info(1, 0, 1)
-        )
-        .is_err()
-    );
-    assert_eq!(measurements, [-7.0; 8]);
-    assert_eq!(columns, [77; 8]);
-    assert_eq!(count, [77]);
+    use filtergraph_algorithms::ShackHartmannMeasurementBlockError;
+    for (values, indices, counts, samples, port, expected, actual) in [
+        (7, 8, 1, COLUMNS, "measurements", 8, 7),
+        (8, 7, 1, COLUMNS, "columns", 8, 7),
+        (8, 8, 0, COLUMNS, "count", 1, 0),
+        (8, 8, 1, COLUMNS - 1, "row-block", COLUMNS, COLUMNS - 1),
+    ] {
+        let error = plan
+            .process_block(
+                &mut measurements[..values],
+                &mut columns[..indices],
+                &mut count[..counts],
+                &mut workspace,
+                &[1.0; COLUMNS][..samples],
+                info(1, 0, 1),
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            ShackHartmannMeasurementBlockError::Extent {
+                port,
+                expected,
+                actual
+            }
+        );
+        assert_eq!(
+            error.to_string(),
+            format!("{port} extent {actual} does not match {expected}")
+        );
+        assert_eq!(measurements, [-7.0; 8]);
+        assert_eq!(columns, [77; 8]);
+        assert_eq!(count, [77]);
+        assert_eq!(workspace.sequence(), None);
+    }
     for block_rows in [0, 4, ROWS] {
-        assert!(matches!(
-            ShackHartmannMeasurementBlockPlan::new(sensing(&ORIGINS), block_rows),
-            Err(ShackHartmannMeasurementBlockPreparationError::BlockRows)
-        ));
+        let error =
+            ShackHartmannMeasurementBlockPlan::new(sensing(&ORIGINS), block_rows).unwrap_err();
+        assert_eq!(
+            error,
+            ShackHartmannMeasurementBlockPreparationError::BlockRows
+        );
+        assert!(error.to_string().contains("divide image height"));
     }
 }
 

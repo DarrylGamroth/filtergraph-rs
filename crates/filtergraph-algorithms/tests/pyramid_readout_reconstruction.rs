@@ -486,3 +486,38 @@ fn normalization_overflow_and_reconstruction_overflow_leave_the_last_frame_commi
         }
     }
 }
+
+#[test]
+fn padded_detector_storage_and_wrong_reconstructor_columns_fail_preparation() {
+    use filtergraph_algorithms::{
+        PyramidPixelPlan, PyramidReadoutReconstructionPlanError as E, RegionExtractionPlan,
+    };
+    let readout = opposed_readout();
+    let padded =
+        RegionExtractionPlan::with_layout((8, 4), &[(7, 0), (0, 0), (4, 2), (2, 2)], (1, 2), 6, 1)
+            .unwrap();
+    let padded =
+        PyramidPixelImagePlan::new(padded, PyramidPixelPlan::new([true, false]).unwrap()).unwrap();
+    for (image, matrix, expected, detail) in [
+        (
+            padded,
+            matrix(4),
+            E::ImageLayout,
+            "complete row-major layout",
+        ),
+        (
+            opposed_image(),
+            matrix(3),
+            E::ReconstructorColumns {
+                expected: 4,
+                actual: 3,
+            },
+            "column count 3",
+        ),
+    ] {
+        let error =
+            PyramidReadoutReconstructionPlan::new(image, matrix, readout.clone()).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
+}

@@ -369,3 +369,53 @@ fn pupil_and_output_shape_errors_leave_normalization_uncommitted() {
     .unwrap();
     assert_eq!((pixels, mean), ([0.0; 4], 4.0));
 }
+
+#[test]
+fn malformed_pupil_geometry_and_calibration_reject_before_replacement() {
+    use filtergraph_algorithms::{PyramidPixelImagePreparationError as E, PyramidPixelPlanError};
+    let one = RegionExtractionPlan::new((2, 4), &[(0, 0)], (1, 1)).unwrap();
+    let error =
+        PyramidPixelImagePlan::<f32>::new(one, PyramidPixelPlan::new([true]).unwrap()).unwrap_err();
+    assert_eq!(error, PyramidPixelImagePlanError::PupilExtent { actual: 1 });
+    assert!(error.to_string().contains("pupil"));
+
+    let geometry = [(0, 0), (1, 0), (0, 2), (1, 2)];
+    let error = PyramidPixelImagePlan::<f32>::from_detector_pupils(
+        (2, 4),
+        (1, 2),
+        &geometry,
+        vec![false; 2],
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        E::Normalization(PyramidPixelPlanError::NoSelectedPixels)
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("must select reconstruction pixels")
+    );
+
+    let plan = PyramidPixelImagePlan::<f32>::from_detector_pupils(
+        (2, 4),
+        (1, 2),
+        &geometry,
+        vec![true, false],
+    )
+    .unwrap();
+    let error = plan.with_u32_pupil_origins(&[0, 0]).unwrap_err();
+    assert_eq!(
+        error,
+        E::OriginExtent {
+            expected: 8,
+            actual: 2
+        }
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("pupil-origin extent 2 does not match 8")
+    );
+    assert_eq!(plan.pupil_regions().origins(), geometry);
+}

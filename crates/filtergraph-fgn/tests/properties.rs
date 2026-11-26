@@ -257,15 +257,22 @@ fn scalar_info(value: PropertyValue<'static>) -> PropertyInfo<'static> {
 #[test]
 fn property_values_preserve_their_abi_type_and_survive_parameter_buffer_release() {
     use PropertyValue::*;
-    for (type_, value, body) in [
-        (abi::TYPE_BOOL, Bool(true), abi::ValueBody { boolean: 1 }),
+    for (type_, initial, expected, body) in [
+        (
+            abi::TYPE_BOOL,
+            Bool(false),
+            Bool(true),
+            abi::ValueBody { boolean: 1 },
+        ),
         (
             abi::TYPE_INT,
+            Int(0),
             Int(i32::MIN),
             abi::ValueBody { integer: i32::MIN },
         ),
         (
             abi::TYPE_LONG,
+            Long(0),
             Long(i64::MIN + 3),
             abi::ValueBody {
                 long_integer: i64::MIN + 3,
@@ -273,24 +280,31 @@ fn property_values_preserve_their_abi_type_and_survive_parameter_buffer_release(
         ),
         (
             abi::TYPE_DOUBLE,
+            Double(0.0),
             Double(1.0 + f64::EPSILON),
             abi::ValueBody {
                 double_value: 1.0 + f64::EPSILON,
             },
         ),
-        (abi::TYPE_ID, Id(u32::MAX), abi::ValueBody { id: u32::MAX }),
+        (
+            abi::TYPE_ID,
+            Id(0),
+            Id(u32::MAX),
+            abi::ValueBody { id: u32::MAX },
+        ),
         (
             abi::TYPE_STRING,
             String("guided"),
+            String("acquisition μs"),
             abi::ValueBody {
                 string: c"guided".as_ptr(),
             },
         ),
     ] {
-        let info = scalar_info(value);
+        let info = scalar_info(initial);
         let runtime = PropertyRuntime::new(ScalarPlan {
             info,
-            value: Some(value),
+            value: Some(initial),
             text: None,
         })
         .unwrap();
@@ -317,14 +331,16 @@ fn property_values_preserve_their_abi_type_and_survive_parameter_buffer_release(
             assert_eq!(unsafe { runtime.prepare(&assignment, 1, &mut token) }, 0);
         }
         assert!(!token.is_null());
-        assert_eq!(runtime.active_plan().property(info.id), Ok(value));
+        assert_eq!(runtime.active_plan().property(info.id), Ok(initial));
         unsafe { runtime.commit(token) };
+        assert_eq!(runtime.active_plan().property(info.id), Ok(initial));
         assert!(PlanStore::adopt(&runtime));
+        assert_eq!(runtime.active_plan().property(info.id), Ok(expected));
         let result = runtime.get(info.id).unwrap();
         assert_eq!(result.type_, type_);
         // Each tag in this table determines the matching active union field.
         unsafe {
-            match value {
+            match expected {
                 Bool(expected) => assert_eq!(result.value.boolean, i32::from(expected)),
                 Int(expected) => assert_eq!(result.value.integer, expected),
                 Long(expected) => assert_eq!(result.value.long_integer, expected),

@@ -389,3 +389,47 @@ fn wrong_stream_dimensions_do_not_consume_a_block_and_overflow_drops_the_frame()
     );
     assert_eq!(output, [16.0]);
 }
+
+#[test]
+fn readout_requires_the_same_detector_geometry_and_complete_row_major_storage() {
+    use filtergraph_algorithms::{
+        RegionExtractionPlan, ShackHartmannReadoutReconstructionPlanError as E,
+    };
+    let origins = [(0, 0)];
+    let sensing = ShackHartmannImagePlan::from_detector_regions(
+        (4, 4),
+        (1, 2),
+        &origins,
+        1.0_f32,
+        0.0,
+        0.0,
+        None,
+        None,
+    )
+    .unwrap();
+    let padded = RegionExtractionPlan::with_layout((4, 4), &origins, (1, 2), 6, 1).unwrap();
+    let padded = ShackHartmannImagePlan::new(padded, sensing.measurement().clone()).unwrap();
+    let matrix = PreparedGemv::new(1, 2, Arc::from([1.0_f32; 2])).unwrap();
+    for (sensing, readout, expected, detail) in [
+        (
+            sensing,
+            eight_region_readout(),
+            E::ImageExtent {
+                readout: (8, 8),
+                sensing: (4, 4),
+            },
+            "image (8, 8) does not match",
+        ),
+        (
+            padded,
+            opposed_readout(),
+            E::ImageLayout,
+            "complete row-major layout",
+        ),
+    ] {
+        let error = ShackHartmannReadoutReconstructionPlan::new(sensing, matrix.clone(), readout)
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
+}
