@@ -347,3 +347,55 @@ fn reconstruction_preserves_named_controller_rows_and_rejects_before_writes_for_
         .is_err()
     );
 }
+
+#[test]
+fn invalid_reference_and_mask_updates_leave_the_selected_pixels_usable() {
+    use filtergraph_algorithms::SccPixelResidualPlanError as PError;
+    let p = P::new(vec![1.0_f32, 3.0, 4.0], vec![true, false, true], 1.0).unwrap();
+    for (result, expected, detail) in [
+        (
+            P::new(vec![], vec![], 1.0),
+            PError::EmptyImage,
+            "reference image must be nonempty",
+        ),
+        (
+            p.with_mask(&[true]),
+            PError::MaskExtent,
+            "mask and reference extents",
+        ),
+        (
+            p.with_mask(&[false; 3]),
+            PError::EmptyMask,
+            "mask must select pixels",
+        ),
+        (
+            p.with_mask(&[true; 3]),
+            PError::SelectedCount,
+            "selected-pixel count",
+        ),
+        (
+            p.with_reference_image(&[f32::NAN, 3.0, 4.0]),
+            PError::NonFiniteReference,
+            "reference image must be finite",
+        ),
+        (
+            P::new(vec![0.0_f32], vec![true], 0.0),
+            PError::InvalidMinimumValidFraction,
+            "minimum valid fraction",
+        ),
+    ] {
+        let error = result.unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
+    let mut output = [71.0; 2];
+    let mut valid = [false; 2];
+    let mut fraction = -1.0;
+    p.process(
+        (&mut output, &mut valid, &mut fraction),
+        &mut NoWorkspace,
+        (&[3.0, 1.0, 9.0], &[true; 3], 1),
+    )
+    .unwrap();
+    assert_eq!((output, valid, fraction), ([2.0, 5.0], [true; 2], 1.0));
+}

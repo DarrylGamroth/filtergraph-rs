@@ -2116,6 +2116,51 @@ fn generated_vdm_projection_preserves_prior_parameter_and_realtime_boundary() {
         ];
         let process = descriptor.process.unwrap();
 
+        // The batch envelope rejects invalid arguments before reading the
+        // parameter arrays or changing the requested plan generation.
+        let prepare_batch = descriptor.prepare_parameters.unwrap();
+        let empty = abi::Parameter {
+            port: 3,
+            reserved: 0,
+            buffer: inputs[1],
+        };
+        let mut token = core::ptr::null_mut();
+        let oversize = abi::MAX_PARAMETER_TRANSACTION_ASSIGNMENTS as u32 + 1;
+        for (owner, params, count, expected) in [
+            (core::ptr::null_mut(), &raw const empty, 1, -abi::EINVAL),
+            (instance, core::ptr::null(), 1, -abi::EINVAL),
+            (instance, &raw const empty, 0, -abi::EINVAL),
+            (instance, &raw const empty, oversize, -abi::E2BIG),
+        ] {
+            assert_eq!(prepare_batch(owner, params, count, &mut token), expected);
+            assert!(token.is_null());
+        }
+        assert_eq!(
+            prepare_batch(instance, &empty, 1, core::ptr::null_mut()),
+            -abi::EINVAL
+        );
+        let wrong_port = abi::Parameter { port: 0, ..empty };
+        let reserved = abi::Parameter {
+            reserved: 1,
+            ..empty
+        };
+        let wrong_format = abi::Parameter {
+            buffer: inputs[0],
+            ..empty
+        };
+        let unknown = abi::Parameter { port: 33, ..empty };
+        for parameter in [wrong_port, reserved, wrong_format, unknown] {
+            assert_eq!(
+                prepare_batch(instance, &parameter, 1, &mut token),
+                -abi::EINVAL
+            );
+            assert!(token.is_null());
+        }
+        assert_eq!(
+            long_property(descriptor, instance, REQUESTED_PARAMETER_SEQUENCE_ID),
+            0
+        );
+
         let mut identity = [1.0_f32, 0.0, 0.0, 1.0];
         let mut parameter_chunk = core::mem::zeroed();
         let mut parameter_data = spa_data(&mut identity, &mut parameter_chunk);
@@ -3196,4 +3241,155 @@ fn metadata_contracts_follow_declarations_and_explicit_deployment_layouts() {
         reserved: 0,
     }; 2];
     assert!(AlgorithmDescriptor::new_with_metadata::<NdarrayCopyF32>(&[&duplicate, &[]]).is_err());
+}
+
+#[test]
+fn deployment_metadata_must_match_port_direction_count_and_inherited_record_size() {
+    let optional = abi::SpaMetaRequirement {
+        type_: 0x777,
+        size: 8,
+        flags: 0,
+        reserved: 0,
+    };
+    let incompatible = abi::SpaMetaRequirement {
+        size: 16,
+        ..optional
+    };
+
+    assert_eq!(
+        AlgorithmDescriptor::new_with_metadata::<NdarrayCopyF32>(&[&[]]).err(),
+        Some(abi::EINVAL)
+    );
+    assert_eq!(
+        AlgorithmDescriptor::new_with_metadata::<NdarrayCopyF32>(&[&[optional], &[incompatible]])
+            .err(),
+        Some(abi::EINVAL)
+    );
+    assert_eq!(
+        AlgorithmDescriptor::new_with_metadata::<OpticalGainCorrectionF32>(&[
+            &[],
+            &[],
+            &[optional]
+        ])
+        .err(),
+        Some(abi::EINVAL)
+    );
+    let valid =
+        AlgorithmDescriptor::new_with_metadata::<NdarrayCopyF32>(&[&[optional], &[optional]])
+            .unwrap();
+    unsafe {
+        let ports = core::slice::from_raw_parts(valid.as_abi().ports, 2);
+        assert_eq!(ports[1].n_metas, 1);
+        assert_eq!((*ports[1].metas).size, 8);
+        assert_eq!((*ports[1].metas).type_, optional.type_);
+    }
+}
+
+#[test]
+fn invalid_port_topologies_are_rejected_before_export() {
+    use filtergraph_algorithms::{
+        AlgorithmConfiguration, AlgorithmDeclaration, AlgorithmInputs, AlgorithmOperation,
+        AlgorithmOutputs, AlgorithmPort, AlgorithmProcessResult, ElementType, NoDeclaredParameters,
+        NoDeclaredProperties, NoWorkspace, PortDirection, PortRole, PreparedAlgorithm,
+    };
+
+    const INPUT: AlgorithmPort = AlgorithmPort::new(
+        "data",
+        PortDirection::Input,
+        PortRole::Data,
+        ElementType::F32,
+        None,
+    );
+    const OUTPUT: AlgorithmPort = AlgorithmPort::new(
+        "output",
+        PortDirection::Output,
+        PortRole::Data,
+        ElementType::F32,
+        None,
+    );
+    struct Declaration<const CASE: u8>;
+    impl<const CASE: u8> AlgorithmDeclaration for Declaration<CASE> {
+        type Configuration = ();
+        type Plan = ();
+        type Workspace = NoWorkspace;
+        type PreparationError = core::convert::Infallible;
+        type ProcessError = core::convert::Infallible;
+        type ScalarProperties = NoDeclaredProperties;
+        type Parameters = NoDeclaredParameters;
+        type ParameterError = core::convert::Infallible;
+
+        const NAME: &'static str = "test-topology";
+        const CONFIGURATION: &'static [AlgorithmConfiguration] = &[];
+        const PORTS: &'static [AlgorithmPort] = match CASE {
+            0 => &[],
+            1 => &[INPUT, INPUT],
+            2 => &[INPUT.conditional(), OUTPUT],
+            3 => &[
+                INPUT,
+                AlgorithmPort::new(
+                    "output",
+                    PortDirection::Output,
+                    PortRole::Data,
+                    ElementType::F32,
+                    Some("absent"),
+                ),
+            ],
+            4 => &[
+                AlgorithmPort::new(
+                    "data",
+                    PortDirection::Input,
+                    PortRole::Data,
+                    ElementType::F32,
+                    Some("data"),
+                ),
+                OUTPUT,
+            ],
+            5 => &[OUTPUT],
+            6 => &[
+                INPUT,
+                AlgorithmPort::new(
+                    "output",
+                    PortDirection::Output,
+                    PortRole::Data,
+                    ElementType::F64,
+                    None,
+                ),
+            ],
+            _ => &[INPUT, OUTPUT],
+        };
+        const OPERATION: AlgorithmOperation = if CASE == 5 || CASE == 6 {
+            AlgorithmOperation::DenseF32
+        } else {
+            AlgorithmOperation::General
+        };
+        fn prepare(_: ()) -> Result<PreparedAlgorithm<Self>, Self::PreparationError> {
+            unreachable!("descriptor export is independent of scientific preparation")
+        }
+        fn process(
+            _: &(),
+            _: &mut NoWorkspace,
+            _: AlgorithmInputs<'_, '_>,
+            _: AlgorithmOutputs<'_, '_>,
+        ) -> Result<AlgorithmProcessResult, Self::ProcessError> {
+            unreachable!("descriptor export is independent of processing")
+        }
+    }
+    for result in [
+        AlgorithmDescriptor::new::<Declaration<0>>(),
+        AlgorithmDescriptor::new::<Declaration<1>>(),
+        AlgorithmDescriptor::new::<Declaration<2>>(),
+        AlgorithmDescriptor::new::<Declaration<3>>(),
+        AlgorithmDescriptor::new::<Declaration<4>>(),
+        AlgorithmDescriptor::new::<Declaration<5>>(),
+        AlgorithmDescriptor::new::<Declaration<6>>(),
+    ] {
+        assert_eq!(result.err(), Some(abi::EINVAL));
+    }
+    assert_eq!(
+        AlgorithmDescriptor::new::<Declaration<7>>()
+            .unwrap()
+            .as_abi()
+            .n_ports,
+        2
+    );
 }

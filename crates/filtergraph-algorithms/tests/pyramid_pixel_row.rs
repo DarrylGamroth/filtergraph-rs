@@ -367,3 +367,69 @@ fn declaration_preserves_gain_when_a_plan_change_abandons_a_frame() {
     }
     assert!(output.iter().any(|value| *value != 0.0));
 }
+
+#[test]
+fn row_quantum_and_nonfinite_normalization_report_the_failing_contract() {
+    use filtergraph_algorithms::{
+        PyramidPixelError, PyramidPixelRowError, PyramidPixelRowPlanError,
+    };
+    let image = image_plan(MASK.to_vec());
+    for (rows, expected, detail) in [
+        (
+            0,
+            PyramidPixelRowPlanError::BlockRows,
+            "height must be positive",
+        ),
+        (
+            8,
+            PyramidPixelRowPlanError::BlockRows,
+            "smaller than image height",
+        ),
+        (
+            3,
+            PyramidPixelRowPlanError::BlockRowsDoNotDivideImage,
+            "must divide image height",
+        ),
+    ] {
+        let error = PyramidPixelRowPlan::new(image.clone(), rows).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
+
+    let plan = PyramidPixelRowPlan::new(image, BLOCK_ROWS).unwrap();
+    let mut workspace = plan.workspace();
+    let mut pixels = [19.0; 12];
+    let mut mean = 19.0;
+    let tiny = [f32::MIN_POSITIVE; BLOCK_ROWS * IMAGE_COLUMNS];
+    for row in (0..IMAGE_ROWS).step_by(BLOCK_ROWS) {
+        plan.process_block(
+            &mut pixels,
+            &mut mean,
+            &mut workspace,
+            &tiny,
+            block_info(100, row),
+        )
+        .unwrap();
+    }
+    let previous = workspace.reciprocal_previous_frame_mean();
+    let published = (pixels, mean);
+    let mut invalid = [2.0; BLOCK_ROWS * IMAGE_COLUMNS];
+    invalid[0] = f32::MAX;
+    let error = plan
+        .process_block(
+            &mut pixels,
+            &mut mean,
+            &mut workspace,
+            &invalid,
+            block_info(101, 0),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        PyramidPixelRowError::Pyramid(PyramidPixelError::NonFiniteOutput { index: 3 })
+    );
+    assert!(error.to_string().contains("3"));
+    assert_eq!(workspace.sequence(), None);
+    assert_eq!(workspace.reciprocal_previous_frame_mean(), previous);
+    assert_eq!((pixels, mean), published);
+}

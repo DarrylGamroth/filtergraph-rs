@@ -31,20 +31,39 @@ fn correction_divides_raw_reconstructed_modes_by_physical_gain() {
 
 #[test]
 fn preparation_rejects_invalid_physical_gains_and_reciprocals() {
-    assert_eq!(
-        OpticalGainCorrectionPlan::<f32>::new([]).unwrap_err(),
-        OpticalGainCorrectionPlanError::Empty
-    );
-    for optical_gain in [0.0_f32, -1.0, f32::NAN, f32::INFINITY] {
-        assert_eq!(
-            OpticalGainCorrectionPlan::new([optical_gain]).unwrap_err(),
-            OpticalGainCorrectionPlanError::InvalidOpticalGain { mode: 0 }
-        );
+    use OpticalGainCorrectionPlanError::*;
+    for (gains, expected, detail) in [
+        (&[][..], Empty, "must be nonempty"),
+        (
+            &[1.0, 0.0][..],
+            InvalidOpticalGain { mode: 1 },
+            "mode 1 must be finite and positive",
+        ),
+        (
+            &[-1.0][..],
+            InvalidOpticalGain { mode: 0 },
+            "mode 0 must be finite and positive",
+        ),
+        (
+            &[f32::NAN][..],
+            InvalidOpticalGain { mode: 0 },
+            "mode 0 must be finite and positive",
+        ),
+        (
+            &[f32::INFINITY][..],
+            InvalidOpticalGain { mode: 0 },
+            "mode 0 must be finite and positive",
+        ),
+        (
+            &[1.0, f32::from_bits(1)][..],
+            NonFiniteReciprocalCorrection { mode: 1 },
+            "reciprocal optical-gain correction for mode 1",
+        ),
+    ] {
+        let error = OpticalGainCorrectionPlan::new(gains).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
     }
-    assert_eq!(
-        OpticalGainCorrectionPlan::new([f32::from_bits(1)]).unwrap_err(),
-        OpticalGainCorrectionPlanError::NonFiniteReciprocalCorrection { mode: 0 }
-    );
 }
 
 #[test]
@@ -52,33 +71,46 @@ fn extent_and_nonfinite_errors_leave_output_unchanged() {
     let plan = OpticalGainCorrectionPlan::new([0.5_f32, 0.25]).unwrap();
     let mut output = [7.0_f32, 8.0];
 
-    assert_eq!(
-        plan.process(&mut output, &mut NoWorkspace, &[1.0])
-            .unwrap_err(),
-        OpticalGainCorrectionError::InputExtent {
-            expected: 2,
-            actual: 1,
-        }
-    );
-    assert_eq!(output, [7.0, 8.0]);
-
-    let mut short = [7.0_f32];
-    assert_eq!(
-        plan.process(&mut short, &mut NoWorkspace, &[1.0, 2.0])
-            .unwrap_err(),
-        OpticalGainCorrectionError::OutputExtent {
-            expected: 2,
-            actual: 1,
-        }
-    );
-    assert_eq!(short, [7.0]);
-
-    assert_eq!(
-        plan.process(&mut output, &mut NoWorkspace, &[1.0, f32::NAN])
-            .unwrap_err(),
-        OpticalGainCorrectionError::NonFiniteInput { mode: 1 }
-    );
-    assert_eq!(output, [7.0, 8.0]);
+    use OpticalGainCorrectionError::*;
+    for (input, nout, expected, detail) in [
+        (
+            &[1.0][..],
+            2,
+            InputExtent {
+                expected: 2,
+                actual: 1,
+            },
+            "input extent 1 does not match 2",
+        ),
+        (
+            &[1.0, 2.0][..],
+            1,
+            OutputExtent {
+                expected: 2,
+                actual: 1,
+            },
+            "output extent 1 does not match 2",
+        ),
+        (
+            &[1.0, f32::NAN][..],
+            2,
+            NonFiniteInput { mode: 1 },
+            "raw reconstructed input for optical-gain mode 1",
+        ),
+        (
+            &[1.0, f32::MAX][..],
+            2,
+            NonFiniteOutput { mode: 1 },
+            "mode 1",
+        ),
+    ] {
+        let error = plan
+            .process(&mut output[..nout], &mut NoWorkspace, input)
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(output, [7.0, 8.0]);
+    }
 }
 
 #[test]

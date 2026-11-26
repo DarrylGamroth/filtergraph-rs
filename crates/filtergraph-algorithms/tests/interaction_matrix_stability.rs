@@ -355,7 +355,7 @@ fn rejected_input_or_calculation_preserves_diagnostics() {
     let original = InteractionMatrixStabilityDiagnostics::<f32>::default();
     let mut diagnostics = original;
 
-    for (input, expected) in [
+    for (input, expected, diagnostic) in [
         (
             InteractionMatrixStabilityInput::new(&[1.0], &[1.0, 2.0]),
             InteractionMatrixStabilityError::InputExtent {
@@ -363,6 +363,7 @@ fn rejected_input_or_calculation_preserves_diagnostics() {
                 expected: 2,
                 actual: 1,
             },
+            "FirstWindow extent 1 does not match 2",
         ),
         (
             InteractionMatrixStabilityInput::new(&[1.0, 2.0], &[1.0]),
@@ -371,6 +372,7 @@ fn rejected_input_or_calculation_preserves_diagnostics() {
                 expected: 2,
                 actual: 1,
             },
+            "SecondWindow extent 1 does not match 2",
         ),
         (
             InteractionMatrixStabilityInput::new(&[f32::NAN, 1.0], &[1.0, 2.0]),
@@ -378,6 +380,7 @@ fn rejected_input_or_calculation_preserves_diagnostics() {
                 input: InteractionMatrixStabilityInputKind::FirstWindow,
                 index: 0,
             },
+            "FirstWindow coefficient at index 0",
         ),
         (
             InteractionMatrixStabilityInput::new(&[1.0, 2.0], &[1.0, f32::INFINITY]),
@@ -385,16 +388,19 @@ fn rejected_input_or_calculation_preserves_diagnostics() {
                 input: InteractionMatrixStabilityInputKind::SecondWindow,
                 index: 1,
             },
+            "SecondWindow coefficient at index 1",
         ),
         (
             InteractionMatrixStabilityInput::new(&[f32::MAX, 1.0], &[-f32::MAX, 2.0]),
             InteractionMatrixStabilityError::NonFiniteCalculation,
+            "calculation produced a non-finite value",
         ),
     ] {
-        assert_eq!(
-            plan.process(&mut diagnostics, &mut NoWorkspace, input),
-            Err(expected)
-        );
+        let error = plan
+            .process(&mut diagnostics, &mut NoWorkspace, input)
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(diagnostic), "{error}");
         assert_eq!(diagnostics, original);
     }
 }
@@ -502,4 +508,47 @@ fn declaration_exposes_typed_diagnostics_and_dimensionless_runtime_thresholds() 
             )
         )
     ));
+}
+
+#[test]
+fn portable_stability_configuration_reports_dimension_and_criterion_failures() {
+    use InteractionMatrixStabilityCriteriaError as Criterion;
+    use InteractionMatrixStabilityF32PreparationError::{Criteria, Plan};
+    use InteractionMatrixStabilityPlanError as Dimension;
+    use filtergraph_algorithms::DeclarationPreparationError;
+    for (rows, columns, minimum, expected, detail) in [
+        (
+            0,
+            1,
+            0.1,
+            Plan(Dimension::EmptyDimension),
+            "dimensions must both be nonzero",
+        ),
+        (
+            usize::MAX,
+            2,
+            0.1,
+            Plan(Dimension::ExtentOverflow),
+            "extent overflow",
+        ),
+        (
+            1,
+            1,
+            -0.1,
+            Criteria(Criterion::InvalidMinimumColumnNorm),
+            "column norm must be positive",
+        ),
+    ] {
+        let error =
+            InteractionMatrixStabilityF32::prepare(InteractionMatrixStabilityF32Configuration {
+                measurement_count: rows,
+                corrector_coordinate_count: columns,
+                minimum_column_norm: minimum,
+                interaction_matrix_schema: "test/covariance/1".into(),
+            })
+            .err()
+            .unwrap();
+        assert_eq!(error, DeclarationPreparationError::Algorithm(expected));
+        assert!(error.to_string().contains(detail), "{error}");
+    }
 }

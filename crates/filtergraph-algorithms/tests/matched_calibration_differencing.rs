@@ -189,8 +189,8 @@ fn rejected_input_preserves_history_and_all_outputs() {
     }
 
     let mut wrong_workspace = other_plan.workspace();
-    assert_eq!(
-        plan.process(
+    let error = plan
+        .process(
             MatchedCalibrationDifferencingOutput::new(
                 &mut output_measurement,
                 &mut output_corrector,
@@ -198,9 +198,10 @@ fn rejected_input_preserves_history_and_all_outputs() {
             ),
             &mut wrong_workspace,
             MatchedCalibrationDifferencingInput::new(&[0.0], &[0.0]),
-        ),
-        Err(MatchedCalibrationDifferencingError::WorkspaceExtent)
-    );
+        )
+        .unwrap_err();
+    assert_eq!(error, MatchedCalibrationDifferencingError::WorkspaceExtent);
+    assert!(error.to_string().contains("workspace extent"), "{error}");
 }
 
 #[test]
@@ -211,17 +212,26 @@ fn rejected_output_extent_does_not_prime_history() {
     let mut corrector = [4.0_f32];
     let mut status = MatchedCalibrationDifferencingStatus::Filtered;
 
-    assert_eq!(
-        plan.process(
-            MatchedCalibrationDifferencingOutput::new(&mut empty, &mut corrector, &mut status,),
+    let error = plan
+        .process(
+            MatchedCalibrationDifferencingOutput::new(&mut empty, &mut corrector, &mut status),
             &mut workspace,
             MatchedCalibrationDifferencingInput::new(&[1.0], &[2.0]),
-        ),
-        Err(MatchedCalibrationDifferencingError::OutputExtent {
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        MatchedCalibrationDifferencingError::OutputExtent {
             output: MatchedCalibrationDifferencingOutputKind::FilteredMeasurements,
             expected: 1,
             actual: 0,
-        })
+        }
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("FilteredMeasurements output extent 0"),
+        "{error}"
     );
     assert!(!workspace.is_primed());
     assert_eq!(corrector, [4.0]);

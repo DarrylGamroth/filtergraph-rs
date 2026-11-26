@@ -203,3 +203,34 @@ fn aborting_an_update_preserves_the_previous_state() {
     plan.abort(&mut workspace).unwrap();
     assert_eq!(workspace.state(), [0.5]);
 }
+
+#[test]
+fn rejected_numeric_sample_preserves_committed_recurrence_for_the_next_tick() {
+    let plan = LeakyIntegratorPlan::new(2.0_f32, 0.5).unwrap();
+    let mut workspace = workspace_with_state(&[4.0, 8.0]);
+    let mut output = [19.0; 2];
+    for (input, expected, detail) in [
+        (
+            [1.0, f32::NAN],
+            LeakyIntegratorError::NonFiniteInput,
+            "input must be finite",
+        ),
+        (
+            [1.0, f32::MAX],
+            LeakyIntegratorError::NonFiniteOutput,
+            "result must be finite",
+        ),
+    ] {
+        let error = plan
+            .process(&mut output, &mut workspace, &input)
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(workspace.state(), [4.0, 8.0]);
+        assert_eq!(output, [19.0; 2]);
+    }
+    plan.process(&mut output, &mut workspace, &[1.0, 1.0])
+        .unwrap();
+    assert_eq!(workspace.state(), [4.0, 6.0]);
+    assert_eq!(output, [4.0, 6.0]);
+}

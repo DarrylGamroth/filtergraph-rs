@@ -427,3 +427,118 @@ fn reverse_projection_failure_does_not_advance_pdm_state() {
     assert_eq!(result, Err(DeformableMirrorCommandError::NonFiniteOutput));
     assert_eq!(workspace.current(), [0.0; 2]);
 }
+
+#[test]
+fn malformed_actuator_limits_fail_preparation_with_distinct_diagnostics() {
+    use DeformableMirrorCommandPlanError::*;
+    let prepare = |lower: f32, upper: f32, slew: Option<f32>| {
+        DeformableMirrorCommandPlan::new(
+            1,
+            1,
+            1,
+            Arc::from([1.0]),
+            Arc::from([1.0]),
+            Arc::from([1.0]),
+            Arc::from([1.0]),
+            Arc::from([lower]),
+            Arc::from([upper]),
+            slew.map(|limit| Arc::from([limit])),
+        )
+    };
+    for (lower, upper, slew, expected, detail) in [
+        (
+            1.0,
+            -1.0,
+            None,
+            InvalidActuatorRange,
+            "lower actuator limit exceeds upper limit",
+        ),
+        (
+            f32::NAN,
+            1.0,
+            None,
+            NonFiniteConfiguration,
+            "limits must be finite",
+        ),
+        (
+            -1.0,
+            1.0,
+            Some(-0.1),
+            InvalidSlewLimit,
+            "slew limits must be nonnegative",
+        ),
+    ] {
+        let error = prepare(lower, upper, slew).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
+    let error = prepare(0.1, 1.0, None)
+        .unwrap()
+        .with_command_power_limit(PdmCommandPowerLimitPlan::new(1, 0.25).unwrap())
+        .unwrap_err();
+    assert_eq!(error, ConstraintOriginOutsideRange);
+    assert!(error.to_string().contains("must contain zero"));
+}
+
+#[test]
+fn malformed_physical_state_and_commands_preserve_actuator_state() {
+    use DeformableMirrorCommandError::*;
+    use filtergraph_algorithms::DeformableMirrorCommandWorkspaceError as WorkspaceError;
+
+    let plan = scao_plan(None);
+    for (initial, expected, detail) in [
+        (
+            &[0.0; 2][..],
+            WorkspaceError::InitialCurrentExtent,
+            "state extent",
+        ),
+        (
+            &[f32::NAN, 0.0, 0.0][..],
+            WorkspaceError::NonFiniteInitialCurrent,
+            "state must be finite",
+        ),
+        (
+            &[1.0, 0.0, 0.0][..],
+            WorkspaceError::InitialCurrentOutsideRange,
+            "violates actuator limits",
+        ),
+    ] {
+        let error = plan.workspace(initial).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
+
+    let mut requested = [31.0; 3];
+    let mut demanded = [31.0; 3];
+    let mut feedback = [31.0; 2];
+    let mut state = plan.workspace(&[0.0; 3]).unwrap();
+    for (command, length, expected, detail) in [
+        (&[0.0][..], 3, InputExtent, "input extent"),
+        (&[0.0; 2][..], 2, OutputExtent, "output extent"),
+        (
+            &[f32::INFINITY, 1.0][..],
+            3,
+            NonFiniteInput,
+            "input must be finite",
+        ),
+    ] {
+        let output = DeformableMirrorCommandOutput {
+            requested: &mut requested[..length],
+            demanded: &mut demanded,
+            vdm_constraint_feedback: &mut feedback,
+        };
+        let input = DeformableMirrorCommandInput {
+            vdm_command: command,
+            best_flat: &[0.0; 3],
+            pdm_offset: &[0.0; 3],
+        };
+        let error = plan.process(output, &mut state, input).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(state.current(), [0.0; 3]);
+        assert_eq!(
+            (requested, demanded, feedback),
+            ([31.0; 3], [31.0; 3], [31.0; 2])
+        );
+    }
+}

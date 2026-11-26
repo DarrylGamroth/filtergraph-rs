@@ -563,3 +563,150 @@ reconstructed_schema="test.filtergraph/reconstructed/1"
         }
     }
 }
+
+fn replace_calibration<D: filtergraph_algorithms::AlgorithmDeclaration>(
+    prepared: &mut filtergraph_algorithms::PreparedAlgorithm<D>,
+) where
+    D::ParameterError: core::fmt::Debug,
+{
+    let origins = [0_u32, 0, 0, 2, 2, 2];
+    let coordinates = [2.0_f32, 3.0, 2.0, 3.0, 2.0, 3.0, 2.0, 3.0];
+    let reference = [1.0_f32; 6];
+    let thresholds = [0.0_f32, 0.0, 3.0, 0.0, 0.0, 0.0];
+    let active = [true, true, false];
+    let updates = [
+        ("subaperture-origins", AlgorithmInput::from(&origins[..])),
+        ("coordinates", AlgorithmInput::from(&coordinates[..])),
+        ("reference-slopes", AlgorithmInput::from(&reference[..])),
+        ("thresholds", AlgorithmInput::from(&thresholds[..])),
+        ("active", AlgorithmInput::from(&active[..])),
+    ];
+    let parameters = updates.map(|(name, input)| {
+        let index = D::PORTS
+            .iter()
+            .position(|port| port.name() == name)
+            .unwrap();
+        (index, input)
+    });
+    prepared.replace_parameters(&parameters).unwrap();
+}
+
+#[test]
+fn weighted_row_calibration_updates_scientific_columns_without_changing_capacity() {
+    let mut prepared = Block::prepare(configuration()).unwrap();
+    replace_calibration(&mut prepared);
+    let mut measurements = [-99.0; 6];
+    let mut columns = [999; 6];
+    let mut count = [999];
+    assert_eq!(prepared.plan().capacity(), 6);
+    for (row, expected_columns, expected_values) in [
+        (0, &[0, 1, 2, 3][..], &[1.0, 2.0, 0.0, 0.0][..]),
+        (2, &[4, 5][..], &[0.0, 0.0][..]),
+        (4, &[][..], &[][..]),
+    ] {
+        let result = Block::process_with_metadata(
+            &mut prepared,
+            &[Some(SampleMetadata::new(31, row).with_terminal(row == 4))],
+            &[2.0; 10],
+            &mut measurements,
+            &mut columns,
+            &mut count,
+        )
+        .unwrap();
+        assert!(result.is_complete());
+        assert_eq!(count[0] as usize, expected_columns.len());
+        assert_eq!(&columns[..count[0] as usize], expected_columns);
+        assert_eq!(&measurements[..count[0] as usize], expected_values);
+    }
+}
+
+#[test]
+fn opposed_readout_and_row_reconstruction_apply_the_same_calibration_transaction() {
+    use filtergraph_algorithms::{
+        ShackHartmannReadoutMeasurementBlockF32 as Readout,
+        ShackHartmannReadoutMeasurementBlockF32Configuration as ReadoutConfig,
+        ShackHartmannRowReconstructorF32 as Row,
+        ShackHartmannRowReconstructorF32Configuration as RowConfig,
+    };
+    let geometry = configuration();
+    let mut readout = Readout::prepare(ReadoutConfig {
+        detector_size: geometry.image_size,
+        region_lines: 3,
+        block_lines: 1,
+        region_samples: 5,
+        detector_origins: vec![[0, 0], [5, 4]],
+        detector_line_steps: vec![[1, 0], [-1, 0]],
+        detector_sample_steps: vec![[0, 1], [0, -1]],
+        subaperture_count: geometry.subaperture_count,
+        initial_subaperture_origins: geometry.initial_subaperture_origins.clone(),
+        coordinate_scale: geometry.coordinate_scale,
+        pixel_threshold: geometry.pixel_threshold,
+        flux_threshold: geometry.flux_threshold,
+        reference_slopes: None,
+        active: None,
+        measurements_schema: geometry.measurements_schema,
+        column_indices_schema: geometry.column_indices_schema,
+        measurement_count_schema: geometry.measurement_count_schema,
+        subaperture_size: geometry.subaperture_size,
+    })
+    .unwrap();
+    let mut row = Row::prepare(RowConfig {
+        row_block_rows: geometry.row_block_rows,
+        subaperture_count: geometry.subaperture_count,
+        initial_subaperture_origins: geometry.initial_subaperture_origins,
+        coordinate_scale: geometry.coordinate_scale,
+        pixel_threshold: geometry.pixel_threshold,
+        flux_threshold: geometry.flux_threshold,
+        reference_slopes: None,
+        active: None,
+        reconstructed_count: 1,
+        initial_reconstructor: Some(vec![1.0; 6]),
+        reconstructed_schema: "test.filtergraph/reconstructed/1".into(),
+        image_size: geometry.image_size,
+        subaperture_size: geometry.subaperture_size,
+    })
+    .unwrap();
+
+    replace_calibration(&mut readout);
+    replace_calibration(&mut row);
+    let mut measurements = [-99.0; 6];
+    let mut columns = [999; 6];
+    let mut count = [999];
+    let mut scientific_order = [-99.0; 6];
+    let mut reconstructed = [-99.0];
+    for ordinal in 0..3 {
+        let terminal = ordinal == 2;
+        assert!(
+            Readout::process_with_metadata(
+                &mut readout,
+                &[Some(
+                    SampleMetadata::new(41, ordinal).with_terminal(terminal)
+                )],
+                &[2.0; 10],
+                &mut measurements,
+                &mut columns,
+                &mut count,
+            )
+            .unwrap()
+            .is_complete()
+        );
+        for i in 0..count[0] as usize {
+            scientific_order[columns[i] as usize] = measurements[i];
+        }
+        let outcome = Row::process_with_metadata(
+            &mut row,
+            &[Some(
+                SampleMetadata::new(41, 2 * ordinal).with_terminal(terminal),
+            )],
+            &[2.0; 10],
+            &mut reconstructed,
+        )
+        .unwrap();
+        assert_eq!(outcome.is_complete(), terminal);
+        if !terminal {
+            assert_eq!(reconstructed, [-99.0]);
+        }
+    }
+    assert_eq!(scientific_order, [1.0, 2.0, 0.0, 0.0, 0.0, 0.0]);
+    assert_eq!(reconstructed, [scientific_order.into_iter().sum::<f32>()]);
+}

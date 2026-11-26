@@ -379,3 +379,62 @@ fn correction_provenance_tracks_prepared_replacements() {
         &[1, 1, 0, 0, 2]
     );
 }
+
+#[test]
+fn projection_preparation_distinguishes_empty_sets_bad_direction_and_overflow() {
+    use filtergraph_algorithms::PdmProjectionError::*;
+    for (dimensions, forward, reverse, expected, diagnostic) in [
+        (
+            0,
+            &[1.0_f32][..],
+            &[1.0][..],
+            EmptyDimension,
+            "dimensions must be nonempty",
+        ),
+        (
+            2,
+            &[1.0][..],
+            &[1.0; 2][..],
+            ProjectionExtent,
+            "projection extent is invalid",
+        ),
+        (
+            1,
+            &[1.0][..],
+            &[1.0; 2][..],
+            ProjectionExtent,
+            "projection extent is invalid",
+        ),
+        (
+            1,
+            &[1.0][..],
+            &[f32::NAN][..],
+            NonFiniteConfiguration,
+            "projections must be finite",
+        ),
+    ] {
+        let error =
+            PdmProjection::new(dimensions, Arc::from(forward), Arc::from(reverse)).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(diagnostic), "{error}");
+    }
+    let none: Arc<[PdmProjection<f32>]> = Arc::from([]);
+    let error = VdmToPdmPlan::new(1, 1, Arc::from([1.0]), Arc::clone(&none)).unwrap_err();
+    assert_eq!(error, EmptyPdmSet);
+    assert!(error.to_string().contains("at least one PDM"));
+    use filtergraph_algorithms::{
+        DeclarationPreparationError, VdmToPdmF32, VdmToPdmF32Configuration,
+    };
+    let error = VdmToPdmF32::prepare(VdmToPdmF32Configuration {
+        active_vdm_count: usize::MAX,
+        full_vdm_count: 2,
+        physical_actuator_count: 1,
+    })
+    .err()
+    .unwrap();
+    assert_eq!(
+        error,
+        DeclarationPreparationError::Algorithm(ExtentOverflow)
+    );
+    assert!(error.to_string().contains("extent overflow"));
+}

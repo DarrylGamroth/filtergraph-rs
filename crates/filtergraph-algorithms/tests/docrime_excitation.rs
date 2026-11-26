@@ -62,16 +62,21 @@ fn f32_and_f64_use_the_same_unit_samples_and_respect_each_amplitude() {
 
 #[test]
 fn preparation_rejects_empty_or_invalid_amplitudes() {
-    assert_eq!(
-        DocrimeExcitationPlan::<f32>::new([], 0),
-        Err(DocrimeExcitationPlanError::Empty)
-    );
+    let error = DocrimeExcitationPlan::<f32>::new([], 0).unwrap_err();
+    assert_eq!(error, DocrimeExcitationPlanError::Empty);
+    assert!(error.to_string().contains("amplitudes must be nonempty"));
     for amplitude in [0.0_f32, -1.0, f32::NAN, f32::INFINITY] {
+        let error = DocrimeExcitationPlan::new([1.0, amplitude], 0).unwrap_err();
         assert_eq!(
-            DocrimeExcitationPlan::new([1.0, amplitude], 0),
-            Err(DocrimeExcitationPlanError::InvalidAmplitude {
-                corrector_coordinate: 1,
-            })
+            error,
+            DocrimeExcitationPlanError::InvalidAmplitude {
+                corrector_coordinate: 1
+            }
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("corrector coordinate 1 must be finite and positive")
         );
     }
 }
@@ -85,21 +90,30 @@ fn rejected_output_or_workspace_extent_preserves_generator_history() {
     let initial = workspace.clone();
     let mut short_output = [7.0];
 
+    let error = plan
+        .process(&mut short_output, &mut workspace, ())
+        .unwrap_err();
     assert_eq!(
-        plan.process(&mut short_output, &mut workspace, ()),
-        Err(DocrimeExcitationError::OutputExtent {
+        error,
+        DocrimeExcitationError::OutputExtent {
             expected: 2,
-            actual: 1,
-        })
+            actual: 1
+        }
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("output extent 1 does not match 2")
     );
     assert_eq!(short_output, [7.0]);
     assert_eq!(workspace, initial);
 
     let mut output = [8.0, 9.0];
-    assert_eq!(
-        plan.process(&mut output, &mut other_workspace, ()),
-        Err(DocrimeExcitationError::WorkspaceExtent)
-    );
+    let error = plan
+        .process(&mut output, &mut other_workspace, ())
+        .unwrap_err();
+    assert_eq!(error, DocrimeExcitationError::WorkspaceExtent);
+    assert!(error.to_string().contains("workspace extent"));
     assert_eq!(output, [8.0, 9.0]);
     assert_eq!(other_workspace, other_plan.workspace());
 }

@@ -292,67 +292,78 @@ fn extent_errors_preserve_outputs_and_retained_history() {
     .unwrap();
     let committed = workspace.clone();
 
+    use ChoppedImageDifferenceError::*;
     difference = [7.0; 2];
     validity = [true; 2];
     status = ChoppedImageDifferenceStatus::Complete;
-    assert_eq!(
-        plan.process(
-            ChoppedImageDifferenceOutput::new(&mut difference, &mut validity, &mut status),
-            &mut workspace,
-            ChoppedImageDifferenceInput::new(ChoppedImageKind::Unfringed, &[0.0], &[true; 2],),
+    for (image_len, flags_len, out_len, valid_len, expected, detail) in [
+        (
+            1,
+            2,
+            2,
+            2,
+            ImageExtent {
+                expected: 2,
+                actual: 1,
+            },
+            "image extent 1",
         ),
-        Err(ChoppedImageDifferenceError::ImageExtent {
-            expected: 2,
-            actual: 1,
-        })
-    );
-    assert_eq!(workspace, committed);
-    assert_eq!(difference, [7.0; 2]);
-    assert_eq!(validity, [true; 2]);
-    assert_eq!(status, ChoppedImageDifferenceStatus::Complete);
-
-    assert_eq!(
-        plan.process(
-            ChoppedImageDifferenceOutput::new(&mut difference, &mut validity, &mut status),
-            &mut workspace,
-            ChoppedImageDifferenceInput::new(ChoppedImageKind::Unfringed, &[0.0; 2], &[true],),
+        (
+            2,
+            1,
+            2,
+            2,
+            InputValidityExtent {
+                expected: 2,
+                actual: 1,
+            },
+            "input validity extent 1",
         ),
-        Err(ChoppedImageDifferenceError::InputValidityExtent {
-            expected: 2,
-            actual: 1,
-        })
-    );
-    assert_eq!(workspace, committed);
-
-    let mut short_difference = [8.0];
-    assert_eq!(
-        plan.process(
-            ChoppedImageDifferenceOutput::new(&mut short_difference, &mut validity, &mut status,),
-            &mut workspace,
-            ChoppedImageDifferenceInput::new(ChoppedImageKind::Unfringed, &[0.0; 2], &[true; 2],),
+        (
+            2,
+            2,
+            1,
+            2,
+            DifferenceExtent {
+                expected: 2,
+                actual: 1,
+            },
+            "difference extent 1",
         ),
-        Err(ChoppedImageDifferenceError::DifferenceExtent {
-            expected: 2,
-            actual: 1,
-        })
-    );
-    assert_eq!(short_difference, [8.0]);
-    assert_eq!(workspace, committed);
-
-    let mut short_validity = [false];
-    assert_eq!(
-        plan.process(
-            ChoppedImageDifferenceOutput::new(&mut difference, &mut short_validity, &mut status,),
-            &mut workspace,
-            ChoppedImageDifferenceInput::new(ChoppedImageKind::Unfringed, &[0.0; 2], &[true; 2],),
+        (
+            2,
+            2,
+            2,
+            1,
+            OutputValidityExtent {
+                expected: 2,
+                actual: 1,
+            },
+            "output validity extent 1",
         ),
-        Err(ChoppedImageDifferenceError::OutputValidityExtent {
-            expected: 2,
-            actual: 1,
-        })
-    );
-    assert_eq!(short_validity, [false]);
-    assert_eq!(workspace, committed);
+    ] {
+        let error = plan
+            .process(
+                ChoppedImageDifferenceOutput::new(
+                    &mut difference[..out_len],
+                    &mut validity[..valid_len],
+                    &mut status,
+                ),
+                &mut workspace,
+                ChoppedImageDifferenceInput::new(
+                    ChoppedImageKind::Unfringed,
+                    &[0.0; 2][..image_len],
+                    &[true; 2][..flags_len],
+                ),
+            )
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(workspace, committed);
+        assert_eq!(difference, [7.0; 2]);
+        assert_eq!(validity, [true; 2]);
+        assert_eq!(status, ChoppedImageDifferenceStatus::Complete);
+    }
 }
 
 #[test]
@@ -528,4 +539,85 @@ fn explicit_absent_optical_fact_rejects_without_inference_from_electrical_level(
     assert_eq!(validity, [true; 2]);
     assert_eq!(status, [99]);
     assert!(!declared.workspace().is_primed());
+}
+
+#[test]
+fn repeated_sequence_and_changed_exposure_do_not_replace_the_committed_pair_member() {
+    use ChoppedImageDifferenceError as E;
+    use filtergraph_algorithms::{
+        DeclarationProcessError, NativeProcessError, SampleAcquisitionIdentity,
+    };
+    let mut node = ChoppedImageDifferenceF32::prepare(ChoppedImageDifferenceF32Configuration {
+        pixel_count: 2,
+        trigger_high_is_fringed: true,
+        input_schema: filtergraph_algorithms::schemas::CALIBRATED_PIXELS_V1.into(),
+        require_acquisition_identity: true,
+    })
+    .unwrap();
+    let sample = |generation, sequence, duration, kind| {
+        SampleMetadata::new(sequence, 0)
+            .with_acquisition_identity(Some(
+                SampleAcquisitionIdentity::new([5; 16], generation, sequence).unwrap(),
+            ))
+            .with_exposure_duration_nanoseconds(core::num::NonZeroU64::new(duration))
+            .with_chopped_image_kind(kind)
+    };
+    let mut difference = [71.0; 2];
+    let mut validity = [false; 2];
+    let mut status = [99];
+    let mut call = |node: &mut _, sample, pixels: &[f32; 2]| {
+        let result = ChoppedImageDifferenceF32::process_with_metadata(
+            node,
+            &[sample, None],
+            pixels,
+            &[true; 2],
+            &mut difference,
+            &mut validity,
+            &mut status,
+        );
+        (result, difference, validity, status)
+    };
+    let fringed = Some(ChoppedImageKind::Fringed);
+    let unfringed = Some(ChoppedImageKind::Unfringed);
+    assert!(
+        call(&mut node, Some(sample(2, 11, 20, fringed)), &[9.0, 7.0])
+            .0
+            .is_ok()
+    );
+    for (wrong, expected, detail) in [
+        (None, E::MetadataMissing, "metadata is missing"),
+        (
+            Some(sample(2, 12, 20, None)),
+            E::TriggerMissing,
+            "role or trigger is missing",
+        ),
+        (
+            Some(sample(1, 12, 20, unfringed)),
+            E::SequenceInvalid,
+            "sequence is invalid",
+        ),
+        (
+            Some(sample(2, 11, 20, unfringed)),
+            E::SequenceInvalid,
+            "sequence is invalid",
+        ),
+        (
+            Some(sample(2, 12, 30, unfringed)),
+            E::ExposureMismatch,
+            "exposure duration changed",
+        ),
+    ] {
+        let (result, differences, validity, status) = call(&mut node, wrong, &[2.0, 3.0]);
+        let error = result.unwrap_err();
+        assert_eq!(
+            error,
+            NativeProcessError::Process(DeclarationProcessError::Algorithm(expected))
+        );
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!((differences, validity, status), ([0.0; 2], [false; 2], [0]));
+    }
+    let (outcome, difference, validity, status) =
+        call(&mut node, Some(sample(2, 12, 20, unfringed)), &[2.0, 3.0]);
+    assert!(outcome.unwrap().is_complete());
+    assert_eq!((difference, validity, status), ([7.0, 4.0], [true; 2], [1]));
 }

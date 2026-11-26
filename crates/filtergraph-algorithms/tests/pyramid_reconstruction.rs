@@ -218,3 +218,34 @@ fn specialized_pupil_dispatch_bounds_cancellation_error() {
     );
     assert_eq!(actual.map(f32::to_bits), simd.map(f32::to_bits));
 }
+
+#[test]
+fn empty_matrix_and_invalid_sparse_coefficients_preserve_prepared_pupil_shapes() {
+    use filtergraph_algorithms::{DeclarationParameterError, PreparedGemvError};
+    let mut prepared =
+        PyramidPupilReconstructorF32::prepare(PyramidPupilReconstructorF32Configuration {
+            reconstructed_count: 1,
+            selected_pixel_count: 2,
+            initial_reconstructor: None,
+            reconstructed_schema: CONTROLLER_RESIDUAL_ERROR_V1.into(),
+        })
+        .unwrap();
+
+    let input = [2.0_f32; 8];
+    let mut output = [17.0];
+    PyramidPupilReconstructorF32::process(&mut prepared, &input, &mut output).unwrap();
+    assert_eq!(output, [0.0]);
+    assert_eq!(prepared.formats()[2].shape(), &[1, 8]);
+
+    let error = prepared
+        .replace_parameter(2, AlgorithmInput::from(&[f32::NAN; 8][..]))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        error,
+        DeclarationParameterError::Algorithm(PreparedGemvError::NonFiniteMatrix)
+    );
+    assert!(error.to_string().contains("finite"));
+    PyramidPupilReconstructorF32::process(&mut prepared, &input, &mut output).unwrap();
+    assert_eq!(output, [0.0]);
+}

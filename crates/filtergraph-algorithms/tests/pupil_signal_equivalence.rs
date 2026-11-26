@@ -298,3 +298,171 @@ fn invalid_calibration_and_geometry_do_not_prepare() {
     c.signal_size = (0, 1);
     assert!(C::prepare(c).is_err());
 }
+
+#[test]
+fn pyramid_calibration_replaces_origins_mask_and_reference_in_port_order() {
+    use filtergraph_algorithms::{
+        AlgorithmDeclaration, DeclarationParameterError, PyramidImageError,
+    };
+    let mut prepared = P::prepare(pyramid("incidence-flux")).unwrap();
+    let port = |name| P::PORTS.iter().position(|p| p.name() == name).unwrap();
+    let origins = [0_u32, 0, 2, 0, 2, 3, 0, 3];
+    let mask = [false, true, true, true];
+    let reference = [0.1_f32, -0.2, 0.25, 0.0, -0.5, 0.0];
+    let gain = [2.0_f32; 6];
+    let parameters = [
+        (port("pupil-origins"), AlgorithmInput::from(&origins[..])),
+        (port("i4q-support"), AlgorithmInput::from(&mask[..])),
+        (
+            port("reference-signal"),
+            AlgorithmInput::from(&reference[..]),
+        ),
+        (port("optical-gain"), AlgorithmInput::from(&gain[..])),
+    ];
+    prepared.replace_parameters(&parameters).unwrap();
+    let mut signal = [19.0; 6];
+    let mut divisor = [19.0];
+    P::process(&mut prepared, &image(), &mut signal, &mut divisor).unwrap();
+    assert_eq!(divisor, [5.0]);
+    // Traversal is column-major after converting the logical row-major mask.
+    // Sum q1-q2-q3+q4 for x and q1+q2-q3-q4 for y, in declared pupil order.
+    let raw = [
+        [3.0, 6.0, 5.0, 6.0],
+        [2.0, 4.0, 3.0, 8.0],
+        [5.0, 8.0, 7.0, 10.0],
+    ];
+    let mut expected = [0.0; 6];
+    for (index, [a, b, c, d]) in raw.into_iter().enumerate() {
+        expected[2 * index] = 2.0 * ((a - b - c + d) / 5.0 - reference[2 * index]);
+        expected[2 * index + 1] = 2.0 * ((a + b - c - d) / 5.0 - reference[2 * index + 1]);
+    }
+    for (actual, expected) in signal.into_iter().zip(expected) {
+        assert!((actual - expected).abs() < 3.0e-6, "{actual} != {expected}");
+    }
+    let error = prepared
+        .replace_parameter(port("i4q-support"), AlgorithmInput::from(&[true; 4][..]))
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        error,
+        DeclarationParameterError::Algorithm(PyramidImageError::Configuration)
+    );
+    assert!(error.to_string().contains("calibration or geometry"));
+    let published = signal;
+    P::process(&mut prepared, &image(), &mut signal, &mut divisor).unwrap();
+    assert_eq!(signal, published);
+}
+
+#[test]
+fn curvature_calibration_applies_signature_scales_support_and_reference_atomically() {
+    use filtergraph_algorithms::{
+        AlgorithmDeclaration, CurvaturePairedSignalError as E, DeclarationProcessError,
+    };
+    let mut prepared = C::prepare(channel()).unwrap();
+    let port = |name| {
+        C::PORTS
+            .iter()
+            .position(|port| port.name() == name)
+            .unwrap()
+    };
+    let support = [true, false, true];
+    let reference = [0.15_f32, 0.0, -0.2];
+    let scales = [2.0_f32, 0.5];
+    let signature = [u64::MAX];
+    prepared
+        .replace_parameters(&[
+            (
+                port("curvature-support"),
+                AlgorithmInput::from(&support[..]),
+            ),
+            (
+                port("reference-signal"),
+                AlgorithmInput::from(&reference[..]),
+            ),
+            (port("branch-scales"), AlgorithmInput::from(&scales[..])),
+            (
+                port("calibration-signature"),
+                AlgorithmInput::from(&signature[..]),
+            ),
+        ])
+        .unwrap();
+    let mut signal = [19.0; 3];
+    let channels = [1.0, 2.0, 3.0, 6.0, 5.0, 4.0];
+    let error = C::process(&mut prepared, &channels, &[7], &mut signal).unwrap_err();
+    assert_eq!(
+        error,
+        DeclarationProcessError::Algorithm(E::CalibrationMismatch)
+    );
+    assert!(error.to_string().contains("signature mismatch"));
+    assert_eq!(signal, [19.0; 3]);
+    C::process(&mut prepared, &channels, &signature, &mut signal).unwrap();
+    assert_eq!(signal, [-0.2 - 0.15, 0.0, 0.5 + 0.2]);
+    let published = signal;
+    let mut overflow = channels;
+    overflow[2] = f32::MAX;
+    let error = C::process(&mut prepared, &overflow, &signature, &mut signal).unwrap_err();
+    assert_eq!(
+        error,
+        DeclarationProcessError::Algorithm(E::NonFiniteOutput)
+    );
+    assert!(error.to_string().contains("arithmetic is nonfinite"));
+    assert_eq!(signal, published);
+}
+
+#[test]
+fn bio_edge_calibration_changes_are_admitted_as_one_signature() {
+    use filtergraph_algorithms::{
+        AlgorithmDeclaration, BiOEdgeImageError as E, DeclarationProcessError,
+    };
+    let mut prepared = B::prepare(bio("incidence-flux")).unwrap();
+    let port = |name| {
+        B::PORTS
+            .iter()
+            .position(|port| port.name() == name)
+            .unwrap()
+    };
+    let origins = [0_u32, 0, 2, 0, 2, 3, 0, 3];
+    let support = [true, true, false, true];
+    let reference = [0.0_f32; 6];
+    let gains = [2.0_f32; 6];
+    let signature = [8_u64];
+    prepared
+        .replace_parameters(&[
+            (port("pupil-origins"), AlgorithmInput::from(&origins[..])),
+            (
+                port("bi-o-edge-support"),
+                AlgorithmInput::from(&support[..]),
+            ),
+            (
+                port("reference-signal"),
+                AlgorithmInput::from(&reference[..]),
+            ),
+            (port("optical-gain"), AlgorithmInput::from(&gains[..])),
+            (
+                port("calibration-signature"),
+                AlgorithmInput::from(&signature[..]),
+            ),
+        ])
+        .unwrap();
+    let mut signal = [19.0; 6];
+    let mut divisor = [19.0];
+    let error = B::process(&mut prepared, &image(), &[7], &mut signal, &mut divisor).unwrap_err();
+    assert_eq!(
+        error,
+        DeclarationProcessError::Algorithm(E::CalibrationMismatch)
+    );
+    assert!(error.to_string().contains("signature"));
+    assert_eq!((signal, divisor), ([19.0; 6], [19.0]));
+    B::process(
+        &mut prepared,
+        &image(),
+        &signature,
+        &mut signal,
+        &mut divisor,
+    )
+    .unwrap();
+    assert_eq!(
+        (signal, divisor),
+        ([0.8, -0.8, 1.2, -2.0, 0.0, -1.6], [5.0])
+    );
+}

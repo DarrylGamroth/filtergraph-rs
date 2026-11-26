@@ -468,3 +468,256 @@ fn declaration_keeps_worker_selection_out_of_scientific_configuration() {
         }
     }
 }
+
+#[test]
+fn replacing_pupil_geometry_and_mask_recomputes_scientific_pixel_order() {
+    let (_, original) = plans();
+    // Move the pupil that completed last to the start of the readout and
+    // change which three pixels per pupil contribute to reconstruction.
+    let origins = [0_u32, 0, 6, 0, 0, 4, 6, 4];
+    let mask = [false, true, true, true];
+    let updated = original
+        .with_u32_pupil_origins(&origins)
+        .unwrap()
+        .with_pupil_mask(&mask)
+        .unwrap();
+    let canonical = PyramidPixelImagePlan::from_detector_pupils(
+        (IMAGE_ROWS, IMAGE_COLUMNS),
+        (PUPIL_ROWS, PUPIL_COLUMNS),
+        &[(0, 0), (6, 0), (0, 4), (6, 4)],
+        mask.to_vec(),
+    )
+    .unwrap();
+    let mut workspace = updated.workspace();
+    let mut canonical_workspace = canonical.workspace();
+    let mut expected = [0.0; SELECTED_PIXELS];
+    let mut expected_mean = 0.0;
+    let mut output = [31.0; SELECTED_PIXELS];
+    let mut mean = 31.0;
+    let mut modes = [31.0; RECONSTRUCTED];
+    for sequence in 0..2 {
+        let input = image(sequence);
+        canonical
+            .process(
+                PyramidPixelOutput::new(&mut expected, &mut expected_mean),
+                &mut canonical_workspace,
+                &input,
+            )
+            .unwrap();
+        for (rows, samples) in input.chunks_exact(BLOCK_ROWS * IMAGE_COLUMNS).enumerate() {
+            let outcome = updated
+                .process_block(
+                    PyramidRowReconstructionOutput::new(&mut output, &mut mean, &mut modes),
+                    &mut workspace,
+                    samples,
+                    block_info(sequence as u64, rows * BLOCK_ROWS),
+                )
+                .unwrap();
+            if matches!(outcome, RowBlockResult::Complete { .. }) {
+                assert_eq!(output, expected);
+                assert_eq!(mean, expected_mean);
+                let mut expected_modes = [0.0; RECONSTRUCTED];
+                original
+                    .reconstructor()
+                    .multiply(&mut expected_modes, &expected)
+                    .unwrap();
+                for (actual, expected) in modes.into_iter().zip(expected_modes) {
+                    assert!((actual - expected).abs() < 3.0e-6);
+                }
+            }
+        }
+    }
+
+    let invalid_mask = updated.with_pupil_mask(&[true; 4]).unwrap_err();
+    assert!(
+        invalid_mask.to_string().contains("16 pixels, expected 12"),
+        "{invalid_mask}"
+    );
+    let invalid_origin = updated
+        .with_u32_pupil_origins(&[8, 0, 6, 0, 0, 4, 6, 4])
+        .unwrap_err();
+    assert!(
+        invalid_origin.to_string().contains("region"),
+        "{invalid_origin}"
+    );
+}
+
+#[test]
+fn invalid_shards_leave_reconstruction_output_untouched() {
+    use filtergraph_algorithms::PyramidRowReconstructionError as E;
+    let (_, plan) = plans();
+    let pixels = [4.0; SELECTED_PIXELS];
+    let mut output = [19.0; 2];
+    for (input, columns, first, expected, detail) in [
+        (
+            &pixels[..SELECTED_PIXELS - 1],
+            0..3,
+            0,
+            E::PartitionPixelExtent {
+                expected: SELECTED_PIXELS,
+                actual: SELECTED_PIXELS - 1,
+            },
+            "partition pixel extent",
+        ),
+        (
+            &pixels[..],
+            SELECTED_PIXELS..SELECTED_PIXELS + 1,
+            0,
+            E::PartitionColumnRange,
+            "partition column range",
+        ),
+        (
+            &pixels[..],
+            0..1,
+            RECONSTRUCTED - 1,
+            E::PartitionOutputRange,
+            "partition output range",
+        ),
+        (
+            &pixels[..],
+            0..1,
+            usize::MAX,
+            E::PartitionOutputRange,
+            "partition output range",
+        ),
+    ] {
+        let error = plan
+            .accumulate_reconstruction_partition(input, &mut output, columns, first)
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(output, [19.0; 2]);
+    }
+}
+
+#[test]
+fn nonfinite_row_reconstruction_discards_partial_state_without_replacing_outputs() {
+    use filtergraph_algorithms::PyramidRowReconstructionError as E;
+
+    let (_, plan) = plans();
+    let overflow = plan
+        .with_reconstructor(&[f32::MAX; SELECTED_PIXELS * RECONSTRUCTED])
+        .unwrap();
+    let mut workspace = plan.workspace();
+    let mut reconstruction = [19.0; RECONSTRUCTED];
+    let mut pixels = [19.0; SELECTED_PIXELS];
+    let mut mean = 19.0;
+    let block = [2.0; BLOCK_ROWS * IMAGE_COLUMNS];
+    for row in (0..IMAGE_ROWS).step_by(BLOCK_ROWS) {
+        plan.process_block(
+            PyramidRowReconstructionOutput::new(&mut pixels, &mut mean, &mut reconstruction),
+            &mut workspace,
+            &block,
+            block_info(80, row),
+        )
+        .unwrap();
+    }
+    assert_eq!(mean, 2.0);
+    let published = (pixels, mean, reconstruction);
+    let error = overflow
+        .process_block(
+            PyramidRowReconstructionOutput::new(&mut pixels, &mut mean, &mut reconstruction),
+            &mut workspace,
+            &[8.0; BLOCK_ROWS * IMAGE_COLUMNS],
+            block_info(81, 0),
+        )
+        .unwrap_err();
+    assert_eq!(error, E::NonFiniteReconstruction);
+    assert!(error.to_string().contains("non-finite"));
+    assert_eq!(workspace.sequence(), None);
+    assert_eq!(workspace.reciprocal_previous_frame_mean(), 0.5);
+    assert_eq!((pixels, mean, reconstruction), published);
+}
+
+#[test]
+fn rejected_reconstructor_shape_and_row_buffer_leave_a_partial_frame_usable() {
+    use filtergraph_algorithms::{PyramidPixelRowError, PyramidRowReconstructionError as E};
+    let (_, plan) = plans();
+    let error = PyramidRowReconstructionPlan::new(
+        plan.pixels().clone(),
+        PreparedGemv::new(RECONSTRUCTED, 1, Arc::from([1.0; RECONSTRUCTED])).unwrap(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("column"), "{error}");
+    let mut workspace = plan.workspace();
+    let block = [2.0; BLOCK_ROWS * IMAGE_COLUMNS];
+    let mut pixels = [17.0; SELECTED_PIXELS];
+    let mut mean = 17.0;
+    let mut command = [17.0; RECONSTRUCTED];
+    let step = |workspace: &mut _,
+                pixels: &mut [f32],
+                mean: &mut f32,
+                command: &mut [f32],
+                row,
+                input: &[f32]| {
+        plan.process_block(
+            PyramidRowReconstructionOutput::new(pixels, mean, command),
+            workspace,
+            input,
+            block_info(121, row),
+        )
+    };
+    step(
+        &mut workspace,
+        &mut pixels,
+        &mut mean,
+        &mut command,
+        0,
+        &block,
+    )
+    .unwrap();
+    for (npixels, ninput, expected, detail) in [
+        (
+            SELECTED_PIXELS - 1,
+            block.len(),
+            E::Pixels(PyramidPixelRowError::OutputExtent {
+                expected: SELECTED_PIXELS,
+                actual: SELECTED_PIXELS - 1,
+            }),
+            "reconstruction-pixel extent",
+        ),
+        (
+            SELECTED_PIXELS,
+            block.len() - 1,
+            E::Pixels(PyramidPixelRowError::InputExtent {
+                expected: block.len(),
+                actual: block.len() - 1,
+            }),
+            "row-block pixel extent",
+        ),
+    ] {
+        let error = step(
+            &mut workspace,
+            &mut pixels[..npixels],
+            &mut mean,
+            &mut command,
+            BLOCK_ROWS,
+            &block[..ninput],
+        )
+        .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(workspace.sequence(), Some(121));
+        assert_eq!(
+            (pixels, mean, command),
+            ([17.0; SELECTED_PIXELS], 17.0, [17.0; RECONSTRUCTED])
+        );
+    }
+    for row in (BLOCK_ROWS..IMAGE_ROWS).step_by(BLOCK_ROWS) {
+        let result = step(
+            &mut workspace,
+            &mut pixels,
+            &mut mean,
+            &mut command,
+            row,
+            &block,
+        )
+        .unwrap();
+        assert_eq!(
+            matches!(result, RowBlockResult::Complete { .. }),
+            row + BLOCK_ROWS == IMAGE_ROWS
+        );
+    }
+    assert_eq!(mean, 2.0);
+    assert_eq!(command, [0.0; RECONSTRUCTED]);
+}

@@ -293,3 +293,143 @@ fn acquisition_failure_preserves_output_and_marks_recovery() {
     ));
     assert_ne!(output, [77.0]);
 }
+
+#[test]
+fn wrong_stream_dimensions_do_not_consume_a_block_and_overflow_drops_the_frame() {
+    use filtergraph_algorithms::{
+        ShackHartmannReadoutReconstructionError as Execution,
+        ShackHartmannReadoutReconstructionPlanError as Preparation,
+    };
+    let sensing = ShackHartmannImagePlan::from_detector_regions(
+        (4, 4),
+        (1, 2),
+        &[(0, 0), (1, 0)],
+        1.0_f32,
+        0.0,
+        0.0,
+        Some(vec![-4.0; 4]),
+        None,
+    )
+    .unwrap();
+    let readout = opposed_readout();
+    let wrong_matrix = PreparedGemv::new(1, 2, Arc::from([1.0; 2])).unwrap();
+    let error =
+        ShackHartmannReadoutReconstructionPlan::new(sensing.clone(), wrong_matrix, readout.clone())
+            .unwrap_err();
+    assert_eq!(
+        error,
+        Preparation::ReconstructorColumns {
+            expected: 4,
+            actual: 2
+        }
+    );
+    assert!(error.to_string().contains("column count 2"));
+
+    let overflow_matrix = PreparedGemv::new(1, 4, Arc::from([f32::MAX; 4])).unwrap();
+    let overflow_plan = ShackHartmannReadoutReconstructionPlan::new(
+        sensing.clone(),
+        overflow_matrix,
+        readout.clone(),
+    )
+    .unwrap();
+    let valid_matrix = PreparedGemv::new(1, 4, Arc::from([1.0; 4])).unwrap();
+    let valid_plan =
+        ShackHartmannReadoutReconstructionPlan::new(sensing, valid_matrix, readout).unwrap();
+    let mut workspace = overflow_plan.workspace();
+    let mut output = [71.0];
+    let input = [2.0; 8];
+    for (out, samples, expected) in [
+        (
+            0,
+            &input[..],
+            Execution::OutputExtent {
+                expected: 1,
+                actual: 0,
+            },
+        ),
+        (
+            1,
+            &input[..7],
+            Execution::InputExtent {
+                expected: 8,
+                actual: 7,
+            },
+        ),
+    ] {
+        let error = overflow_plan
+            .process_block(
+                &mut output[..out],
+                &mut workspace,
+                samples,
+                info(61, 0, false),
+            )
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains("extent"));
+        assert_eq!(workspace.sequence(), None);
+        assert_eq!(output, [71.0]);
+    }
+
+    let error = overflow_plan
+        .process_block(&mut output, &mut workspace, &input, info(61, 0, false))
+        .unwrap_err();
+    assert!(matches!(error, Execution::Reconstruction(_)), "{error}");
+    assert_eq!(workspace.sequence(), None);
+    assert_eq!(output, [71.0]);
+    assert_eq!(
+        valid_plan.process_block(&mut output, &mut workspace, &input, info(62, 0, false)),
+        Ok(DetectorReadoutResult::Pending)
+    );
+    assert_eq!(
+        valid_plan.process_block(&mut output, &mut workspace, &input, info(62, 1, true)),
+        Ok(DetectorReadoutResult::Complete {
+            sequence: 62,
+            discontinuity: true
+        })
+    );
+    assert_eq!(output, [16.0]);
+}
+
+#[test]
+fn readout_requires_the_same_detector_geometry_and_complete_row_major_storage() {
+    use filtergraph_algorithms::{
+        RegionExtractionPlan, ShackHartmannReadoutReconstructionPlanError as E,
+    };
+    let origins = [(0, 0)];
+    let sensing = ShackHartmannImagePlan::from_detector_regions(
+        (4, 4),
+        (1, 2),
+        &origins,
+        1.0_f32,
+        0.0,
+        0.0,
+        None,
+        None,
+    )
+    .unwrap();
+    let padded = RegionExtractionPlan::with_layout((4, 4), &origins, (1, 2), 6, 1).unwrap();
+    let padded = ShackHartmannImagePlan::new(padded, sensing.measurement().clone()).unwrap();
+    let matrix = PreparedGemv::new(1, 2, Arc::from([1.0_f32; 2])).unwrap();
+    for (sensing, readout, expected, detail) in [
+        (
+            sensing,
+            eight_region_readout(),
+            E::ImageExtent {
+                readout: (8, 8),
+                sensing: (4, 4),
+            },
+            "image (8, 8) does not match",
+        ),
+        (
+            padded,
+            opposed_readout(),
+            E::ImageLayout,
+            "complete row-major layout",
+        ),
+    ] {
+        let error = ShackHartmannReadoutReconstructionPlan::new(sensing, matrix.clone(), readout)
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
+}

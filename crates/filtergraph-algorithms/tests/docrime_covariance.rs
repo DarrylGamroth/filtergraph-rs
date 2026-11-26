@@ -227,14 +227,18 @@ fn finite_window_stops_at_the_exact_selected_sample_count() {
     }
     let completed = workspace.clone();
     assert_eq!(workspace.sample_count(), 2);
-    assert_eq!(
-        plan.process(
+    let error = plan
+        .process(
             (),
             &mut workspace,
             DocrimeCovarianceInput::new(&[f32::NAN], &[f32::INFINITY]),
-        ),
-        Err(DocrimeCovarianceError::SampleLimitReached { sample_limit: 2 })
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        DocrimeCovarianceError::SampleLimitReached { sample_limit: 2 }
     );
+    assert!(error.to_string().contains("sample limit 2"));
     assert_committed_history_eq(&workspace, &completed);
 
     let plan64 = DocrimeCovariancePlan::with_sample_limit(1, 1, 1).unwrap();
@@ -270,7 +274,7 @@ fn rejected_samples_preserve_every_committed_history_array() {
     .unwrap();
     let committed = workspace.clone();
 
-    for (input, expected) in [
+    for (input, expected, detail) in [
         (
             DocrimeCovarianceInput::new(&[], &[0.0]),
             DocrimeCovarianceError::InputExtent {
@@ -278,6 +282,7 @@ fn rejected_samples_preserve_every_committed_history_array() {
                 expected: 1,
                 actual: 0,
             },
+            "Measurements input extent 0",
         ),
         (
             DocrimeCovarianceInput::new(&[0.0], &[]),
@@ -286,6 +291,7 @@ fn rejected_samples_preserve_every_committed_history_array() {
                 expected: 1,
                 actual: 0,
             },
+            "CorrectorSample input extent 0",
         ),
         (
             DocrimeCovarianceInput::new(&[f32::NAN], &[0.0]),
@@ -293,6 +299,7 @@ fn rejected_samples_preserve_every_committed_history_array() {
                 input: DocrimeCovarianceInputKind::Measurements,
                 index: 0,
             },
+            "Measurements input at index 0",
         ),
         (
             DocrimeCovarianceInput::new(&[0.0], &[f32::INFINITY]),
@@ -300,13 +307,17 @@ fn rejected_samples_preserve_every_committed_history_array() {
                 input: DocrimeCovarianceInputKind::CorrectorSample,
                 index: 0,
             },
+            "CorrectorSample input at index 0",
         ),
         (
             DocrimeCovarianceInput::new(&[-f32::MAX], &[-f32::MAX]),
             DocrimeCovarianceError::NonFiniteCalculation,
+            "calculation produced a non-finite value",
         ),
     ] {
-        assert_eq!(plan.process((), &mut workspace, input), Err(expected));
+        let error = plan.process((), &mut workspace, input).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
         assert_committed_history_eq(&workspace, &committed);
     }
 

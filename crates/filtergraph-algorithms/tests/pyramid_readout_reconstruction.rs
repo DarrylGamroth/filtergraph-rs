@@ -284,3 +284,240 @@ fn failed_frame_preserves_committed_gain_and_marks_recovery() {
         }
     );
 }
+
+#[test]
+fn masked_detector_sample_still_participates_in_frame_mean_before_publication() {
+    use filtergraph_algorithms::{PyramidPixelError, PyramidReadoutReconstructionError};
+
+    let image = opposed_image();
+    let readout = opposed_readout();
+    let plan = PyramidReadoutReconstructionPlan::new(image, matrix(4), readout.clone()).unwrap();
+    let mut workspace = plan.workspace();
+    let mut pixels = [71.0; 4];
+    let mut mean = 71.0;
+    let mut reconstructed = [71.0; RECONSTRUCTED];
+
+    // The second pixel of the first pupil is masked from reconstruction.
+    // It is still part of the four-pupil normalization mean.
+    let mut invalid = [2.0_f32; 32];
+    invalid[7 * 4 + 1] = f32::NAN;
+    for (sequence, detector) in [(51, invalid), (52, [4.0; 32])] {
+        let packed = readout.pack_detector(&detector).unwrap();
+        for (ordinal, block) in packed.chunks_exact(readout.block_elements()).enumerate() {
+            let result = plan.process_block(
+                PyramidReadoutReconstructionOutput::new(&mut pixels, &mut mean, &mut reconstructed),
+                &mut workspace,
+                block,
+                info(sequence, ordinal, readout.blocks()),
+            );
+            match (sequence, ordinal) {
+                (51, 3) => {
+                    let error = result.unwrap_err();
+                    assert_eq!(
+                        error,
+                        PyramidReadoutReconstructionError::Pixels(
+                            PyramidPixelError::NonFiniteInput { pupil: 0, pixel: 1 }
+                        )
+                    );
+                    assert!(error.to_string().contains("pupil 0"));
+                    assert_eq!(workspace.sequence(), None);
+                    assert_eq!(workspace.reciprocal_previous_frame_mean(), 0.0);
+                    assert_eq!(
+                        (pixels, mean, reconstructed),
+                        ([71.0; 4], 71.0, [71.0; RECONSTRUCTED])
+                    );
+                }
+                (52, 3) => {
+                    assert_eq!(
+                        result,
+                        Ok(DetectorReadoutResult::Complete {
+                            sequence: 52,
+                            discontinuity: true
+                        })
+                    );
+                    assert_eq!((pixels, mean), ([0.0; 4], 4.0));
+                    assert_eq!(workspace.reciprocal_previous_frame_mean(), 0.25);
+                }
+                _ => {
+                    assert_eq!(result, Ok(DetectorReadoutResult::Pending));
+                    assert_eq!(
+                        (pixels, mean, reconstructed),
+                        ([71.0; 4], 71.0, [71.0; RECONSTRUCTED])
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn pyramid_readout_checks_format_compatibility_before_assembly() {
+    use filtergraph_algorithms::{
+        PyramidReadoutReconstructionError as Execution,
+        PyramidReadoutReconstructionPlanError as Preparation,
+    };
+    let readout = opposed_readout();
+    let error =
+        PyramidReadoutReconstructionPlan::new(eight_region_image(), matrix(12), readout.clone())
+            .unwrap_err();
+    assert!(matches!(error, Preparation::ImageExtent { .. }), "{error}");
+    let plan =
+        PyramidReadoutReconstructionPlan::new(opposed_image(), matrix(4), readout.clone()).unwrap();
+    let mut workspace = plan.workspace();
+    let mut pixels = [71.0; 4];
+    let mut mean = 71.0;
+    let mut reconstructed = [71.0; RECONSTRUCTED];
+    for (npixels, nreconstructed, ninput, expected) in [
+        (
+            3,
+            RECONSTRUCTED,
+            8,
+            Execution::PixelOutputExtent {
+                expected: 4,
+                actual: 3,
+            },
+        ),
+        (
+            4,
+            2,
+            8,
+            Execution::ReconstructedOutputExtent {
+                expected: RECONSTRUCTED,
+                actual: 2,
+            },
+        ),
+        (
+            4,
+            RECONSTRUCTED,
+            7,
+            Execution::InputExtent {
+                expected: 8,
+                actual: 7,
+            },
+        ),
+    ] {
+        let error = plan
+            .process_block(
+                PyramidReadoutReconstructionOutput::new(
+                    &mut pixels[..npixels],
+                    &mut mean,
+                    &mut reconstructed[..nreconstructed],
+                ),
+                &mut workspace,
+                &[2.0; 8][..ninput],
+                info(53, 0, readout.blocks()),
+            )
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains("extent"));
+        assert_eq!(workspace.sequence(), None);
+        assert_eq!(
+            (pixels, mean, reconstructed),
+            ([71.0; 4], 71.0, [71.0; RECONSTRUCTED])
+        );
+    }
+}
+
+#[test]
+fn normalization_overflow_and_reconstruction_overflow_leave_the_last_frame_committed() {
+    use filtergraph_algorithms::{PyramidPixelError, PyramidReadoutReconstructionError as Error};
+
+    let readout = opposed_readout();
+    let plan = PyramidReadoutReconstructionPlan::new(
+        opposed_image(),
+        PreparedGemv::new(3, 4, Arc::from([f32::MAX; 12])).unwrap(),
+        readout.clone(),
+    )
+    .unwrap();
+    let safe_plan =
+        PyramidReadoutReconstructionPlan::new(opposed_image(), matrix(4), readout.clone()).unwrap();
+    let mut workspace = plan.workspace();
+    let mut pixels = [71.0; 4];
+    let mut mean = 71.0;
+    let mut modes = [71.0; 3];
+    let mut first = [4.0_f32; 32];
+    first[0] = f32::MAX;
+    first[1] = f32::MAX;
+    for (sequence, image, reconstruct, expected) in [
+        (
+            71,
+            first,
+            &safe_plan,
+            Some(Error::Pixels(PyramidPixelError::NonFiniteMean)),
+        ),
+        (72, [0.5; 32], &safe_plan, None),
+        (73, [8.0; 32], &plan, None),
+    ] {
+        let packed = readout.pack_detector(&image).unwrap();
+        for (ordinal, block) in packed.chunks_exact(readout.block_elements()).enumerate() {
+            let result = reconstruct.process_block(
+                PyramidReadoutReconstructionOutput::new(&mut pixels, &mut mean, &mut modes),
+                &mut workspace,
+                block,
+                info(sequence, ordinal, readout.blocks()),
+            );
+            if sequence == 73 {
+                let error = result.unwrap_err();
+                assert!(matches!(error, Error::Reconstruction(_)), "{error}");
+                assert_eq!(mean, 0.5);
+                assert_eq!(pixels, [0.0; 4]);
+                assert_eq!(modes, [0.0; 3]);
+                assert_eq!(workspace.reciprocal_previous_frame_mean(), 2.0);
+                assert_eq!(workspace.sequence(), None);
+                break;
+            } else if ordinal + 1 < readout.blocks() {
+                assert_eq!(result, Ok(DetectorReadoutResult::Pending));
+                assert_eq!(mean, 71.0);
+            } else if let Some(expected) = expected {
+                let error = result.unwrap_err();
+                assert_eq!(error, expected);
+                assert!(error.to_string().contains("mean"), "{error}");
+                assert_eq!((mean, pixels, modes), (71.0, [71.0; 4], [71.0; 3]));
+            } else {
+                assert_eq!(
+                    result,
+                    Ok(DetectorReadoutResult::Complete {
+                        sequence,
+                        discontinuity: true
+                    })
+                );
+                assert_eq!((mean, pixels, modes), (0.5, [0.0; 4], [0.0; 3]));
+            }
+        }
+    }
+}
+
+#[test]
+fn padded_detector_storage_and_wrong_reconstructor_columns_fail_preparation() {
+    use filtergraph_algorithms::{
+        PyramidPixelPlan, PyramidReadoutReconstructionPlanError as E, RegionExtractionPlan,
+    };
+    let readout = opposed_readout();
+    let padded =
+        RegionExtractionPlan::with_layout((8, 4), &[(7, 0), (0, 0), (4, 2), (2, 2)], (1, 2), 6, 1)
+            .unwrap();
+    let padded =
+        PyramidPixelImagePlan::new(padded, PyramidPixelPlan::new([true, false]).unwrap()).unwrap();
+    for (image, matrix, expected, detail) in [
+        (
+            padded,
+            matrix(4),
+            E::ImageLayout,
+            "complete row-major layout",
+        ),
+        (
+            opposed_image(),
+            matrix(3),
+            E::ReconstructorColumns {
+                expected: 4,
+                actual: 3,
+            },
+            "column count 3",
+        ),
+    ] {
+        let error =
+            PyramidReadoutReconstructionPlan::new(image, matrix, readout.clone()).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
+}

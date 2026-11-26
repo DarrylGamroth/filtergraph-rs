@@ -456,3 +456,121 @@ fn correction_admits_physical_identity_independently_and_rejects_missing_facts_a
         assert_eq!(p.workspace().acquisition_identity(), Some(id));
     }
 }
+
+#[test]
+fn matrix_replacement_preserves_shape_and_applies_each_new_calibration() {
+    use filtergraph_algorithms::SccWeightedRegularizedReconstructionPlanError as Prep;
+    let plan = Pcg::new(1, 1, 1, vec![1.0], vec![1.0], 1.0, 4, 1.0e-5, 1.0e-8).unwrap();
+    let mut workspace = plan.workspace();
+    for replacement in [
+        plan.with_interaction_matrix(&[]),
+        plan.with_regularization_operator(&[f32::NAN]),
+    ] {
+        let error = replacement.unwrap_err();
+        assert_eq!(error, Prep::Matrix);
+        assert!(error.to_string().contains("Matrix"), "{error}");
+    }
+    let h = plan.with_interaction_matrix(&[2.0]).unwrap();
+    let l = h.with_regularization_operator(&[3.0]).unwrap();
+    // In one dimension x = H w y / (H² w + λ L²).
+    for (calibration, expected) in [(&plan, 6.0 / 3.0), (&h, 12.0 / 9.0), (&l, 12.0 / 17.0)] {
+        let mut command = [19.0];
+        calibration
+            .process(&mut command, &mut workspace, (&[3.0], &[2.0]))
+            .unwrap();
+        assert!((command[0] - expected).abs() < 2.0e-6, "{command:?}");
+    }
+}
+
+#[test]
+fn spatial_calibration_identifies_bad_planes_fir_and_thresholds() {
+    use filtergraph_algorithms::SccSpatialCarrierDemodulationPlanError as E;
+
+    for (roi, phase, taps, support, fraction, expected) in [
+        (
+            &[true][..],
+            None,
+            &[1.0][..],
+            1.0,
+            1.0,
+            E::CalibrationExtent,
+        ),
+        (&[false; 2][..], None, &[1.0][..], 1.0, 1.0, E::EmptyRoi),
+        (
+            &[true; 2][..],
+            Some(&[f32::NAN, 0.0][..]),
+            &[1.0][..],
+            1.0,
+            1.0,
+            E::NonFiniteCalibration,
+        ),
+        (
+            &[true; 2][..],
+            None,
+            &[1.0, -2.0, 1.0][..],
+            1.0,
+            1.0,
+            E::Fir,
+        ),
+        (&[true; 2][..], None, &[f32::INFINITY][..], 1.0, 1.0, E::Fir),
+        (
+            &[true; 2][..],
+            None,
+            &[1.0][..],
+            0.0,
+            1.0,
+            E::MinimumSupport,
+        ),
+        (
+            &[true; 2][..],
+            None,
+            &[1.0][..],
+            1.0,
+            1.1,
+            E::MinimumValidFraction,
+        ),
+    ] {
+        let error = Spatial::new(
+            (1, 2),
+            roi,
+            taps.len(),
+            None,
+            None,
+            phase,
+            Some(taps),
+            support,
+            fraction,
+        )
+        .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(
+            error.to_string().contains(&format!("{expected:?}")),
+            "{error}"
+        );
+    }
+    let plan = Spatial::new(
+        (1, 2),
+        &[true; 2],
+        1,
+        None,
+        None,
+        None,
+        Some(&[2.0]),
+        1.0,
+        1.0,
+    )
+    .unwrap();
+    let mut values = [71.0; 4];
+    let mut weights = [71.0; 4];
+    let mut valid = [false; 4];
+    let mut fraction = -1.0;
+    plan.process(
+        (&mut values, &mut weights, &mut valid, &mut fraction),
+        &mut plan.workspace(),
+        (&[2.0, 3.0], &[true; 2], 1),
+    )
+    .unwrap();
+    assert_eq!(values, [2.0, 3.0, 0.0, 0.0]);
+    assert_eq!(valid, [true; 4]);
+    assert_eq!(fraction, 1.0);
+}

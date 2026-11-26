@@ -528,37 +528,54 @@ fn preparation_rejects_every_invalid_criterion_dimension_and_loop_gain() {
             DocrimeConditioningCriteriaError::InvalidMinimumFactorizationPivotRatio,
         ),
     ] {
-        assert_eq!(
-            DocrimeConditioningCriteria::new(minimum_variance, maximum_correlation, minimum_pivot,),
-            Err(expected)
-        );
+        use DocrimeConditioningCriteriaError::*;
+        let error =
+            DocrimeConditioningCriteria::new(minimum_variance, maximum_correlation, minimum_pivot)
+                .unwrap_err();
+        assert_eq!(error, expected);
+        let field = match expected {
+            InvalidMinimumCorrectorVariance => "corrector variance",
+            InvalidMaximumAbsoluteCorrectorCorrelation => "corrector correlation",
+            InvalidMinimumFactorizationPivotRatio => "factorization pivot ratio",
+        };
+        assert!(error.to_string().contains(field), "{error}");
     }
 
+    use DocrimeInteractionMatrixPlanError::*;
     let criteria = DocrimeConditioningCriteria::new(0.1_f32, 0.9, 0.01).unwrap();
-    assert_eq!(
-        DocrimeOpenLoopInteractionMatrixPlan::new(0, 1, criteria),
-        Err(DocrimeInteractionMatrixPlanError::EmptyDimension)
-    );
-    assert_eq!(
-        DocrimeOpenLoopInteractionMatrixPlan::new(1, 0, criteria),
-        Err(DocrimeInteractionMatrixPlanError::EmptyDimension)
-    );
-    assert_eq!(
-        DocrimeOpenLoopInteractionMatrixPlan::new(usize::MAX, 2, criteria),
-        Err(DocrimeInteractionMatrixPlanError::ExtentOverflow {
-            matrix: DocrimeInteractionMatrixKind::MeasurementByCorrector,
-        })
-    );
-    assert_eq!(
-        DocrimeOpenLoopInteractionMatrixPlan::new(1, usize::MAX, criteria),
-        Err(DocrimeInteractionMatrixPlanError::ExtentOverflow {
-            matrix: DocrimeInteractionMatrixKind::CorrectorByCorrector,
-        })
-    );
+    for (measurements, correctors, expected, detail) in [
+        (0, 1, EmptyDimension, "dimensions must be nonzero"),
+        (1, 0, EmptyDimension, "dimensions must be nonzero"),
+        (
+            usize::MAX,
+            2,
+            ExtentOverflow {
+                matrix: DocrimeInteractionMatrixKind::MeasurementByCorrector,
+            },
+            "MeasurementByCorrector matrix extent",
+        ),
+        (
+            1,
+            usize::MAX,
+            ExtentOverflow {
+                matrix: DocrimeInteractionMatrixKind::CorrectorByCorrector,
+            },
+            "CorrectorByCorrector matrix extent",
+        ),
+    ] {
+        let error = DocrimeOpenLoopInteractionMatrixPlan::new(measurements, correctors, criteria)
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
     for loop_gain in [0.0, -0.1, f32::NAN, f32::INFINITY] {
-        assert_eq!(
-            DocrimeClosedLoopInteractionMatrixPlan::new(1, 1, loop_gain, criteria),
-            Err(DocrimeInteractionMatrixPlanError::InvalidLoopGain)
+        let error =
+            DocrimeClosedLoopInteractionMatrixPlan::new(1, 1, loop_gain, criteria).unwrap_err();
+        assert_eq!(error, InvalidLoopGain);
+        assert!(
+            error
+                .to_string()
+                .contains("closed-loop gain must be finite and positive")
         );
     }
 }
@@ -588,6 +605,7 @@ fn malformed_inputs_and_calculations_preserve_both_outputs() {
                 expected: 2,
                 actual: 1,
             },
+            "MeasurementCorrectorCrossCovarianceSum extent 1 does not match 2",
         ),
         (
             DocrimeCovariances::new(2, &cross, &short_corrector),
@@ -596,6 +614,7 @@ fn malformed_inputs_and_calculations_preserve_both_outputs() {
                 expected: 4,
                 actual: 3,
             },
+            "CorrectorCovarianceSum extent 3 does not match 4",
         ),
         (
             DocrimeCovariances::new(2, &nonfinite_cross, &corrector),
@@ -603,6 +622,7 @@ fn malformed_inputs_and_calculations_preserve_both_outputs() {
                 input: DocrimeInteractionMatrixInputKind::MeasurementCorrectorCrossCovarianceSum,
                 index: 0,
             },
+            "MeasurementCorrectorCrossCovarianceSum coefficient at index 0",
         ),
         (
             DocrimeCovariances::new(2, &cross, &nonfinite_corrector),
@@ -610,22 +630,25 @@ fn malformed_inputs_and_calculations_preserve_both_outputs() {
                 input: DocrimeInteractionMatrixInputKind::CorrectorCovarianceSum,
                 index: 3,
             },
+            "CorrectorCovarianceSum coefficient at index 3",
         ),
         (
             DocrimeCovariances::new(2, &cross, &asymmetric_corrector),
             DocrimeInteractionMatrixError::NonSymmetricCorrectorCovariance { row: 0, column: 1 },
+            "differs at (0, 1) and (1, 0)",
         ),
     ];
 
-    for (covariances, expected) in cases {
-        assert_eq!(
-            plan.process(
-                DocrimeInteractionMatrixOutput::new(&mut interaction_matrix, &mut diagnostics,),
+    for (covariances, expected, diagnostic) in cases {
+        let error = plan
+            .process(
+                DocrimeInteractionMatrixOutput::new(&mut interaction_matrix, &mut diagnostics),
                 &mut workspace,
                 covariances,
-            ),
-            Err(expected)
-        );
+            )
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(diagnostic), "{error}");
         assert_eq!(interaction_matrix, [7.0, 8.0]);
         assert_eq!(diagnostics, unchanged_diagnostics);
     }
@@ -678,4 +701,41 @@ fn nonfinite_closed_loop_solve_preserves_both_outputs() {
     );
     assert_eq!(interaction_matrix, [7.0]);
     assert_eq!(diagnostics, unchanged_diagnostics);
+}
+
+#[test]
+fn nonfinite_correlation_names_the_failed_stage_and_preserves_last_matrix() {
+    use filtergraph_algorithms::DocrimeInteractionMatrixStage;
+    let criteria = DocrimeConditioningCriteria::new(f64::MIN_POSITIVE, 0.99, 0.01).unwrap();
+    let plan = DocrimeOpenLoopInteractionMatrixPlan::new(1, 2, criteria).unwrap();
+    let mut workspace = plan.workspace();
+    let mut matrix = [7.0, 8.0];
+    let mut diagnostic = DocrimeInteractionMatrixDiagnostics::default();
+    let before = diagnostic;
+    let covariance = [f64::MIN_POSITIVE, f64::MAX, f64::MAX, f64::MIN_POSITIVE];
+    let error = plan
+        .process(
+            DocrimeInteractionMatrixOutput::new(&mut matrix, &mut diagnostic),
+            &mut workspace,
+            DocrimeCovariances::new(2, &[1.0, 2.0], &covariance),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        DocrimeInteractionMatrixError::NonFiniteCalculation {
+            stage: DocrimeInteractionMatrixStage::CorrectorCorrelation,
+        }
+    );
+    assert!(error.to_string().contains("CorrectorCorrelation"));
+    assert_eq!(matrix, [7.0, 8.0]);
+    assert_eq!(diagnostic, before);
+
+    plan.process(
+        DocrimeInteractionMatrixOutput::new(&mut matrix, &mut diagnostic),
+        &mut workspace,
+        DocrimeCovariances::new(2, &[1.0, 2.0], &[1.0, 0.0, 0.0, 1.0]),
+    )
+    .unwrap();
+    assert_eq!(matrix, [1.0, 2.0]);
+    assert!(diagnostic.status().is_valid());
 }

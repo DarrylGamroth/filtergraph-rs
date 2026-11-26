@@ -75,7 +75,17 @@ jobs:
           eval "$coverage_env"
           cargo test --workspace --locked
           cargo test --locked -p filtergraph-algorithms --no-default-features
+          cargo test --locked -p filtergraph-fgn --no-default-features
           cargo test --workspace --locked --all-features
+          # Exercise the detector, SCC, and ML paths selected by CPU features.
+          grep -qm 1 '\bavx2\b' /proc/cpuinfo
+          grep -qm 1 '\bfma\b' /proc/cpuinfo
+          RUSTFLAGS="$RUSTFLAGS -C target-feature=+avx2,+fma" \
+            cargo test --locked -p filtergraph-algorithms --features experimental-simd-gemv \
+              --lib --test shack_hartmann --test shack_hartmann_streaming_equivalence \
+              --test chopped_image_difference --test scc_residual_equivalence \
+              --test shape_dense_ml_equivalence --test pyramid_i4q_equivalence \
+              --test pyramid_reconstruction
           python3 scripts/test_fgn_declaration.py --debug \
             --fgn-source "$RUNNER_TEMP/pipewireao" --fgn-build "$RUNNER_TEMP/pipewireao/build"
           python3 -m unittest discover -s scripts -p 'test_fgn_software_version.py'

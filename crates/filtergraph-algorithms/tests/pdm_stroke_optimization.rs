@@ -75,34 +75,65 @@ fn independently_prepared_maps_are_used_without_transpose_inference() {
 
 #[test]
 fn preparation_rejects_empty_invalid_and_nonfinite_artifacts() {
-    assert_eq!(
-        PdmStrokeOptimizationPlan::<f32>::new(0, 1, Arc::from([]), Arc::from([]), Arc::from([]),),
-        Err(PdmStrokeOptimizationPlanError::EmptyPdm)
-    );
-    assert_eq!(
-        PdmStrokeOptimizationPlan::new(1, 0, Arc::from([0.0_f32]), Arc::from([]), Arc::from([])),
-        Err(PdmStrokeOptimizationPlanError::EmptyNullModes)
-    );
-    assert_eq!(
-        PdmStrokeOptimizationPlan::new(
+    use PdmStrokeOptimizationPlanError::*;
+    for (pdm, modes, preferred, forward, reverse, expected, detail) in [
+        (
+            0,
+            1,
+            &[][..],
+            &[][..],
+            &[][..],
+            EmptyPdm,
+            "actuator extent must be nonempty",
+        ),
+        (
+            1,
+            0,
+            &[0.0][..],
+            &[][..],
+            &[][..],
+            EmptyNullModes,
+            "requires at least one null mode",
+        ),
+        (
             2,
             1,
-            Arc::from([0.0_f32; 2]),
-            Arc::from([1.0_f32]),
-            Arc::from([1.0_f32; 2])
+            &[0.0; 2][..],
+            &[1.0][..],
+            &[1.0; 2][..],
+            Extent,
+            "extent is invalid",
         ),
-        Err(PdmStrokeOptimizationPlanError::Extent)
-    );
-    assert_eq!(
-        PdmStrokeOptimizationPlan::new(
+        (
             1,
             1,
-            Arc::from([f32::NAN]),
-            Arc::from([1.0_f32]),
-            Arc::from([1.0_f32])
+            &[f32::NAN][..],
+            &[1.0][..],
+            &[1.0][..],
+            NonFiniteConfiguration,
+            "configuration must be finite",
         ),
-        Err(PdmStrokeOptimizationPlanError::NonFiniteConfiguration)
-    );
+        (
+            usize::MAX,
+            2,
+            &[][..],
+            &[][..],
+            &[][..],
+            ExtentOverflow,
+            "matrix extent overflow",
+        ),
+    ] {
+        let error = PdmStrokeOptimizationPlan::new(
+            pdm,
+            modes,
+            Arc::from(preferred),
+            Arc::from(forward),
+            Arc::from(reverse),
+        )
+        .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
 }
 
 #[test]
@@ -118,22 +149,41 @@ fn processing_rejects_invalid_extents_and_nonfinite_values() {
     let mut workspace = plan.workspace();
     let mut output = [0.0];
 
-    assert_eq!(
-        plan.process(&mut output, &mut workspace, &[]),
-        Err(PdmStrokeOptimizationError::InputExtent)
-    );
-    assert_eq!(
-        plan.process(&mut [], &mut workspace, &[0.0]),
-        Err(PdmStrokeOptimizationError::OutputExtent)
-    );
-    assert_eq!(
-        plan.process(&mut output, &mut workspace, &[f32::NAN]),
-        Err(PdmStrokeOptimizationError::NonFiniteInput)
-    );
-    assert_eq!(
-        plan.process(&mut output, &mut workspace, &[f32::MAX]),
-        Err(PdmStrokeOptimizationError::NonFiniteOutput)
-    );
+    use PdmStrokeOptimizationError::*;
+    let other = PdmStrokeOptimizationPlan::new(
+        2,
+        1,
+        Arc::from([0.0; 2]),
+        Arc::from([1.0; 2]),
+        Arc::from([1.0; 2]),
+    )
+    .unwrap();
+    let mut wrong_workspace = other.workspace();
+    for (input, nout, wrong_scratch, expected, detail) in [
+        (&[][..], 1, false, InputExtent, "input extent"),
+        (&[0.0][..], 0, false, OutputExtent, "output extent"),
+        (&[0.0][..], 1, true, WorkspaceExtent, "workspace extent"),
+        (
+            &[f32::NAN][..],
+            1,
+            false,
+            NonFiniteInput,
+            "input must be finite",
+        ),
+        (&[f32::MAX][..], 1, false, NonFiniteOutput, "non-finite"),
+    ] {
+        let storage = if wrong_scratch {
+            &mut wrong_workspace
+        } else {
+            &mut workspace
+        };
+        let error = plan
+            .process(&mut output[..nout], storage, input)
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(output, [0.0]);
+    }
 }
 
 #[test]

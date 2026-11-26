@@ -259,3 +259,156 @@ fn readout_calibration_consumes_pending_discontinuity_after_plan_adoption() {
 fn readout_calibration_consumes_pending_discontinuity_after_reset() {
     check_readout_pending_discontinuity(true);
 }
+
+#[test]
+fn rejected_calibration_blocks_do_not_consume_pending_plan_discontinuity() {
+    use filtergraph_algorithms::{
+        DeclarationProcessError, DetectorReadoutCalibrationProcessError as E, NativeProcessError,
+    };
+
+    let mut calibration =
+        PixelCalibrationReadoutU16F32::prepare(PixelCalibrationReadoutU16F32Configuration {
+            region_lines: 2,
+            block_lines: 1,
+            region_samples: 4,
+            detector_origins: origins(),
+            detector_line_steps: line_steps(),
+            detector_sample_steps: sample_steps(),
+            initial_flat: None,
+            initial_background: None,
+            detector_size: (4, 4),
+        })
+        .unwrap();
+    let backgrounds: Vec<_> = (1..=16).map(|background| background as f32).collect();
+    let port = PixelCalibrationReadoutU16F32::PORTS
+        .iter()
+        .position(|port| port.name() == "background")
+        .unwrap();
+    calibration
+        .replace_parameter(port, AlgorithmInput::from(backgrounds.as_slice()))
+        .unwrap()
+        .unwrap();
+    let mut output = [83.0; 8];
+    for (sample, expected, detail) in [
+        (
+            None,
+            E::MissingSampleMetadata,
+            "sample metadata is required",
+        ),
+        (
+            Some(sample(1, 2)),
+            E::OrdinalRange {
+                ordinal: 2,
+                blocks: 2,
+            },
+            "ordinal 2 is outside 2",
+        ),
+        (
+            Some(sample(1, 0).with_terminal(true)),
+            E::Terminal,
+            "terminal marker",
+        ),
+    ] {
+        let error = PixelCalibrationReadoutU16F32::process_with_metadata(
+            &mut calibration,
+            &[sample],
+            &[20; 8],
+            &mut output,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            NativeProcessError::Process(DeclarationProcessError::Algorithm(expected))
+        );
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(output, [83.0; 8]);
+    }
+
+    for (ordinal, expected) in [
+        (0, [19.0, 18.0, 17.0, 16.0, 7.0, 6.0, 5.0, 4.0]),
+        (1, [15.0, 14.0, 13.0, 12.0, 11.0, 10.0, 9.0, 8.0]),
+    ] {
+        let metadata = sample(7, ordinal);
+        let result = PixelCalibrationReadoutU16F32::process_with_metadata(
+            &mut calibration,
+            &[Some(metadata)],
+            &[20; 8],
+            &mut output,
+        )
+        .unwrap();
+        assert_eq!(
+            result.metadata(),
+            Some(metadata.with_discontinuity(ordinal == 0))
+        );
+        assert_eq!(output, expected);
+    }
+}
+
+#[test]
+fn readout_configuration_preserves_geometry_failure_through_declaration_admission() {
+    use filtergraph_algorithms::{
+        DeclarationPreparationError, DetectorReadoutProfileError,
+        PixelCalibrationReadoutU16F32PreparationError,
+    };
+    let cfg = |line_steps, size, flat| PixelCalibrationReadoutU16F32Configuration {
+        region_lines: 2,
+        block_lines: 1,
+        region_samples: 4,
+        detector_origins: origins(),
+        detector_line_steps: line_steps,
+        detector_sample_steps: sample_steps(),
+        initial_flat: flat,
+        initial_background: None,
+        detector_size: size,
+    };
+    let error = PixelCalibrationReadoutU16F32::prepare(cfg(vec![[1, 0]], (4, 4), None))
+        .err()
+        .unwrap();
+    assert_eq!(
+        error,
+        DeclarationPreparationError::Algorithm(
+            PixelCalibrationReadoutU16F32PreparationError::Profile(
+                DetectorReadoutProfileError::RegionExtent {
+                    origins: 2,
+                    line_steps: 1,
+                    sample_steps: 2,
+                }
+            )
+        )
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("2 origins, 1 line steps, and 2 sample steps")
+    );
+
+    let error = PixelCalibrationReadoutU16F32::prepare(cfg(line_steps(), (4, 3), None))
+        .err()
+        .unwrap();
+    assert!(matches!(
+        error,
+        DeclarationPreparationError::Algorithm(
+            PixelCalibrationReadoutU16F32PreparationError::Profile(
+                DetectorReadoutProfileError::Mapping(_)
+            )
+        )
+    ));
+    assert!(
+        error
+            .to_string()
+            .contains("pixel extent 16 does not match detector extent 12")
+    );
+
+    let mut flat = vec![1.0; 16];
+    flat[1] = f32::NAN;
+    let error = PixelCalibrationReadoutU16F32::prepare(cfg(line_steps(), (4, 4), Some(flat)))
+        .err()
+        .unwrap();
+    assert!(matches!(
+        error,
+        DeclarationPreparationError::Algorithm(
+            PixelCalibrationReadoutU16F32PreparationError::Calibration(_)
+        )
+    ));
+    assert!(error.to_string().contains("flat value at index 1"));
+}

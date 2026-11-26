@@ -453,3 +453,220 @@ fn declaration_estimates_one_window_and_replaces_calibration_response() {
     }
     assert!((optical_gain[0] - 1.0).abs() <= 4.0 * f32::EPSILON);
 }
+
+#[test]
+fn estimator_rejects_inconsistent_window_metadata_and_accepts_a_corrected_sample() {
+    use OpticalGainEstimatorError::*;
+
+    let schedule =
+        OpticalGainDitherSchedule::new([OpticalGainDitherMode::new(1.0_f32, 4, 1)]).unwrap();
+    let estimator = OpticalGainEstimatorPlan::new(schedule, [1.0]).unwrap();
+    let mut workspace = estimator.workspace();
+    let mut storage = OutputStorage::filled(1, 71.0);
+    let input = OpticalGainEstimatorInput::new(&[1.0], &[0.5]);
+    assert_eq!(input.realized_command_modes(), &[1.0]);
+    assert_eq!(input.reconstructed_response_modes(), &[0.5]);
+    for (wrong, expected, detail) in [
+        (
+            input.with_window_state(1, &[1], false),
+            WindowFrameMismatch {
+                expected: 0,
+                actual: 1,
+            },
+            "window frame 1 does not match 0",
+        ),
+        (
+            input.with_window_state(0, &[], false),
+            PhaseIndexExtent {
+                expected: 1,
+                actual: 0,
+            },
+            "phase-index extent 0 does not match 1",
+        ),
+        (
+            input.with_window_state(0, &[2], false),
+            PhaseIndexMismatch {
+                mode: 0,
+                expected: 0,
+                actual: 2,
+            },
+            "phase 2 for mode 0 does not match 0",
+        ),
+        (
+            input.with_window_state(0, &[0], true),
+            WindowCompletionMismatch {
+                expected: false,
+                actual: true,
+            },
+            "completion flag true does not match false",
+        ),
+    ] {
+        let error = estimator
+            .process(storage.output(), &mut workspace, wrong)
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(workspace.frame_count(), 0);
+        assert!(storage.complete);
+        assert_eq!(storage.optical_gains, [71.0]);
+    }
+    estimator
+        .process(
+            storage.output(),
+            &mut workspace,
+            input.with_window_state(0, &[0], false),
+        )
+        .unwrap();
+    assert_eq!(workspace.frame_count(), 1);
+    assert!(!storage.complete);
+
+    let other_schedule = OpticalGainDitherSchedule::new([
+        OpticalGainDitherMode::new(1.0_f32, 4, 2),
+        OpticalGainDitherMode::new(1.0_f32, 8, 1),
+    ])
+    .unwrap();
+    let other_estimator = OpticalGainEstimatorPlan::new(other_schedule, [1.0; 2]).unwrap();
+    let error = estimator
+        .process(storage.output(), &mut other_estimator.workspace(), input)
+        .unwrap_err();
+    assert_eq!(error, WorkspaceExtent);
+    assert!(error.to_string().contains("workspace extent"));
+}
+
+#[test]
+fn estimator_distinguishes_the_malformed_input_and_output_fields() {
+    use OpticalGainEstimateField::*;
+    use OpticalGainEstimatorError::*;
+    use OpticalGainEstimatorInputKind::*;
+
+    let schedule =
+        OpticalGainDitherSchedule::new([OpticalGainDitherMode::new(1.0_f32, 4, 1)]).unwrap();
+    let estimator = OpticalGainEstimatorPlan::new(schedule, [1.0]).unwrap();
+    let mut workspace = estimator.workspace();
+
+    let mut storage = OutputStorage::filled(1, 71.0);
+    for (command, response, expected, detail) in [
+        (
+            &[1.0][..],
+            &[][..],
+            InputExtent {
+                input: ReconstructedResponse,
+                expected: 1,
+                actual: 0,
+            },
+            "ReconstructedResponse input extent 0 does not match 1",
+        ),
+        (
+            &[1.0][..],
+            &[f32::INFINITY][..],
+            NonFiniteInput {
+                input: ReconstructedResponse,
+                mode: 0,
+            },
+            "ReconstructedResponse input for mode 0 is not finite",
+        ),
+    ] {
+        let error = estimator
+            .process(
+                storage.output(),
+                &mut workspace,
+                OpticalGainEstimatorInput::new(command, response),
+            )
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(workspace.frame_count(), 0);
+        assert!(storage.complete);
+    }
+
+    for field in [
+        CommandAmplitude,
+        ResponseAmplitude,
+        OpticalGain,
+        PhaseLag,
+        Validity,
+    ] {
+        let mut storage = OutputStorage::filled(1, 71.0);
+        match field {
+            CommandAmplitude => storage.command_amplitudes.clear(),
+            ResponseAmplitude => storage.response_amplitudes.clear(),
+            OpticalGain => storage.optical_gains.clear(),
+            PhaseLag => storage.phase_lags.clear(),
+            Validity => storage.valid.clear(),
+        }
+        let error = estimator
+            .process(
+                storage.output(),
+                &mut workspace,
+                OpticalGainEstimatorInput::new(&[1.0], &[0.5]),
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            OutputExtent {
+                field,
+                expected: 1,
+                actual: 0
+            }
+        );
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("{field:?} output extent 0 does not match 1"))
+        );
+        assert_eq!(workspace.frame_count(), 0);
+        assert!(storage.complete);
+    }
+}
+
+#[test]
+fn incompatible_window_length_does_not_consume_the_next_estimator_sample() {
+    use std::sync::Arc;
+    let mode = |period| OpticalGainDitherMode::new(1.0_f32, period, 1);
+    let long_schedule = Arc::new(OpticalGainDitherSchedule::new([mode(8)]).unwrap());
+    let long = OpticalGainEstimatorPlan::new(Arc::clone(&long_schedule), [2.0]).unwrap();
+    let short =
+        OpticalGainEstimatorPlan::new(OpticalGainDitherSchedule::new([mode(4)]).unwrap(), [1.0])
+            .unwrap();
+    let mut workspace = long.workspace();
+    let mut storage = OutputStorage::filled(1, 19.0);
+    assert!(Arc::ptr_eq(&long_schedule, &long.shared_schedule()));
+    assert_eq!(long.two_over_window(), 0.25);
+    assert_eq!(long.calibration_responses(), &[2.0]);
+    for _ in 0..4 {
+        long.process(
+            storage.output(),
+            &mut workspace,
+            OpticalGainEstimatorInput::new(&[1.0], &[2.0]),
+        )
+        .unwrap();
+    }
+    let error = short
+        .process(
+            storage.output(),
+            &mut workspace,
+            OpticalGainEstimatorInput::new(&[1.0], &[2.0]),
+        )
+        .unwrap_err();
+    assert_eq!(error, OpticalGainEstimatorError::WorkspaceState);
+    assert!(error.to_string().contains("workspace frame count"));
+    assert_eq!(workspace.frame_count(), 4);
+    assert_eq!(storage.optical_gains, [19.0]);
+    workspace.reset();
+    for observation in [1.0, 0.0, -1.0, 0.0] {
+        short
+            .process(
+                storage.output(),
+                &mut workspace,
+                OpticalGainEstimatorInput::new(&[observation], &[observation * 0.75]),
+            )
+            .unwrap();
+    }
+    let output = storage.output();
+    assert!(output.is_complete());
+    assert_eq!(output.command_amplitudes(), [1.0]);
+    assert_eq!(output.response_amplitudes(), [0.75]);
+    assert_eq!(output.optical_gains(), [0.75]);
+    assert!(output.phase_lags()[0].abs() < 1.0e-6);
+    assert_eq!(output.valid(), [true]);
+}
