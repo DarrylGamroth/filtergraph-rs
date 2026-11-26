@@ -53,6 +53,12 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      - name: Cache the OpenBLAS build
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ~/.local/share/openblas_build
+          key: openblas-ubuntu-24.04-${{ runner.arch }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}
+
       - name: Configure the public PipeWireAO graph host
         run: |
           source_dir="$RUNNER_TEMP/pipewireao"
@@ -73,7 +79,8 @@ jobs:
           python3 scripts/test_fgn_declaration.py --debug \
             --fgn-source "$RUNNER_TEMP/pipewireao" --fgn-build "$RUNNER_TEMP/pipewireao/build"
           python3 -m unittest discover -s scripts -p 'test_fgn_software_version.py'
-          cargo llvm-cov report --lcov --output-path target/lcov.info
+          cargo llvm-cov report --lcov --output-path target/lcov.info \
+            --ignore-filename-regex '(^|/)(tests|examples|benches)/'
 
       - name: Summarize line coverage
         run: |
@@ -101,6 +108,7 @@ jobs:
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
         with:
           use_oidc: true
+          disable_file_fixes: true
           disable_search: true
           files: target/lcov.info
           fail_ci_if_error: true
