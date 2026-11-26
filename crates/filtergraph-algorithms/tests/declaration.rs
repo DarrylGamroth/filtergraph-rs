@@ -355,3 +355,139 @@ fn sample_metadata_annotations_are_owned_by_data_inputs() {
             .is_empty()
     );
 }
+
+#[test]
+fn format_rejects_unrepresentable_extents_and_normalizes_rates() {
+    use filtergraph_algorithms::AlgorithmFormat;
+    const SCHEMA: &str = "test/filtergraph/1";
+    for (shape, schema, expected, detail) in [
+        (&[][..], SCHEMA, FormatError::Rank, "rank"),
+        (&[1; 65][..], SCHEMA, FormatError::Rank, "rank"),
+        (&[2, 0][..], SCHEMA, FormatError::Dimension, "dimensions"),
+        (
+            &[usize::MAX][..],
+            SCHEMA,
+            FormatError::Dimension,
+            "positive u32",
+        ),
+        (
+            &[u32::MAX as usize, 2][..],
+            SCHEMA,
+            FormatError::Extent,
+            "byte extent",
+        ),
+        (&[2][..], "unversioned", FormatError::Schema, "schema"),
+    ] {
+        let error = AlgorithmFormat::packed::<f64>(shape, schema).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
+    let format =
+        AlgorithmFormat::packed_with_layout::<i16>(&[3, 2], ArrayLayout::ColumnMajor, SCHEMA)
+            .unwrap();
+    assert_eq!(format.layout(), ArrayLayout::ColumnMajor);
+    assert_eq!(format.elements(), 6);
+    assert_eq!(format.element_type(), ElementType::I16);
+    assert_eq!(
+        format
+            .clone()
+            .with_rate_ratio(1200, 15)
+            .unwrap()
+            .rate_ratio(),
+        (80, 1)
+    );
+    for (numerator, denominator) in [(0, 1), (1, 0)] {
+        let error = format
+            .clone()
+            .with_rate_ratio(numerator, denominator)
+            .unwrap_err();
+        assert_eq!(error, FormatError::Rate);
+        assert!(error.to_string().contains("rate"));
+    }
+}
+
+#[test]
+fn rejected_declaration_metadata_preserves_output_and_persistent_history() {
+    use filtergraph_algorithms::NativeProcessError;
+    let mut declared = LeakyIntegratorF32::prepare(LeakyIntegratorF32Configuration {
+        extent: 2,
+        initial_state: 8.0,
+        input_schema: CONTROLLER_RESIDUAL_ERROR_V1.into(),
+        output_schema: CONTROLLER_COMMAND_V1.into(),
+    })
+    .unwrap();
+    let input = [3.0_f32, 4.0];
+    let mut output = [15.0_f32; 2];
+
+    let error = declared
+        .process_with_metadata(
+            &[AlgorithmInput::from(&input[..])],
+            &[],
+            &mut [AlgorithmOutput::from(&mut output[..])],
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        NativeProcessError::Metadata(PortError::MetadataExtent)
+    );
+    assert!(error.to_string().contains("sample metadata extent"));
+    assert_eq!(output, [15.0; 2]);
+
+    let error = declared
+        .process_with_metadata(
+            &[AlgorithmInput::from(&input[..])],
+            &[None],
+            &mut [AlgorithmOutput::from(&mut output[..1])],
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        NativeProcessError::Process(DeclarationProcessError::Port(PortError::Extent {
+            expected: 2,
+            actual: 1
+        }))
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("extent 1 does not match prepared extent 2")
+    );
+    assert_eq!(output, [15.0; 2]);
+    assert_eq!(declared.workspace().state(), [8.0; 2]);
+}
+
+#[test]
+fn rejected_sparse_transactions_leave_the_previous_optical_correction_active() {
+    use DeclarationParameterError::*;
+    let mut declared = OpticalGainCorrectionF32::prepare(OpticalGainCorrectionF32Configuration {
+        optical_gains: vec![1.0, 2.0],
+    })
+    .unwrap();
+    let candidate = AlgorithmInput::from(&[4.0_f32, 8.0][..]);
+    let duplicates = [(2, candidate), (2, candidate)];
+    for (transaction, expected, detail) in [
+        (&[][..], EmptyTransaction, "transaction is empty"),
+        (&[(0, candidate)][..], UnknownPort { port: 0 }, "port 0"),
+        (
+            &duplicates[..],
+            DuplicatePort { port: 2 },
+            "port 2 is assigned more than once",
+        ),
+        (
+            &[(2, AlgorithmInput::from(&[1_u32, 2][..]))][..],
+            Port(PortError::ElementType),
+            "element type",
+        ),
+    ] {
+        let error = declared.replace_parameters(transaction).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+        let mut output = [0.0; 2];
+        OpticalGainCorrectionF32::process(&mut declared, &[2.0, 8.0], &mut output).unwrap();
+        assert_eq!(output, [2.0, 4.0]);
+    }
+    declared.replace_parameters(&[(2, candidate)]).unwrap();
+    let mut output = [0.0; 2];
+    OpticalGainCorrectionF32::process(&mut declared, &[2.0, 8.0], &mut output).unwrap();
+    assert_eq!(output, [0.5, 1.0]);
+}

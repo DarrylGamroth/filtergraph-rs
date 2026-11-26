@@ -316,3 +316,163 @@ fn calibration_is_packed_off_path_and_assembles_to_the_reference_image() {
     assert_eq!(detector_output, expected.as_slice());
     assert_ne!(calibration.packed_flat(), flat.as_slice());
 }
+
+#[test]
+fn invalid_readout_storage_is_failure_atomic_and_reports_the_wrong_extent() {
+    use filtergraph_algorithms::{DetectorFrameAssemblerError, DetectorReadoutDataError};
+    let readout = opposed_readout();
+    let mut output = [99_u16; 16];
+    let block = [1; 8];
+
+    let error = readout.pack_detector(&output[..15]).unwrap_err();
+    assert_eq!(
+        error,
+        DetectorReadoutDataError::DetectorExtent {
+            expected: 16,
+            actual: 15
+        }
+    );
+    assert!(error.to_string().contains("15") && error.to_string().contains("16"));
+    for (detector_len, samples, ordinal, expected) in [
+        (
+            15,
+            &block[..],
+            0,
+            DetectorReadoutDataError::DetectorExtent {
+                expected: 16,
+                actual: 15,
+            },
+        ),
+        (
+            16,
+            &block[..7],
+            0,
+            DetectorReadoutDataError::BlockExtent {
+                expected: 8,
+                actual: 7,
+            },
+        ),
+        (
+            16,
+            &block[..],
+            2,
+            DetectorReadoutDataError::OrdinalRange {
+                ordinal: 2,
+                blocks: 2,
+            },
+        ),
+    ] {
+        let error = readout
+            .scatter_block(&mut output[..detector_len], samples, ordinal)
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert_eq!(output, [99; 16]);
+    }
+
+    let plan = DetectorFrameAssemblerPlan::new(readout);
+    let mut workspace = plan.workspace::<u16>();
+    assert_eq!(
+        plan.process_block(&mut output, &mut workspace, &block, info(7, 0, false)),
+        Ok(DetectorReadoutResult::Pending)
+    );
+    for (output_len, samples, expected, diagnostic) in [
+        (
+            15,
+            &block[..],
+            DetectorFrameAssemblerError::OutputExtent {
+                expected: 16,
+                actual: 15,
+            },
+            "output extent 15 does not match 16",
+        ),
+        (
+            16,
+            &block[..7],
+            DetectorFrameAssemblerError::InputExtent {
+                expected: 8,
+                actual: 7,
+            },
+            "block extent 7 does not match 8",
+        ),
+    ] {
+        let error = plan
+            .process_block(
+                &mut output[..output_len],
+                &mut workspace,
+                samples,
+                info(7, 1, true),
+            )
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(diagnostic));
+        assert_eq!(workspace.sequence(), Some(7));
+        assert_eq!(output, [99; 16]);
+    }
+    assert_eq!(
+        plan.process_block(&mut output, &mut workspace, &[2; 8], info(7, 1, true)),
+        Ok(DetectorReadoutResult::Complete {
+            sequence: 7,
+            discontinuity: false
+        })
+    );
+    assert_eq!(output, [1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 1, 1, 1, 1]);
+}
+
+#[test]
+fn invalid_block_metadata_abandons_partial_frames_and_recovery_is_marked_once() {
+    use DetectorReadoutDropReason::*;
+    use DetectorReadoutResult::*;
+
+    let plan = DetectorFrameAssemblerPlan::new(eight_region_readout());
+    let mut workspace = plan.workspace::<u16>();
+    let mut output = [99_u16; 64];
+    let block = [1; 32];
+    for (bad, reason) in [
+        (
+            DetectorReadoutBlockInfo {
+                corrupted: true,
+                ..info(10, 1, true)
+            },
+            Corrupted,
+        ),
+        (
+            DetectorReadoutBlockInfo {
+                discontinuity: true,
+                ..info(10, 1, true)
+            },
+            MidFrameDiscontinuity,
+        ),
+        (info(10, 2, true), OrdinalRange),
+        (info(10, 1, false), Terminal),
+    ] {
+        assert_eq!(
+            plan.process_block(&mut output, &mut workspace, &block, info(10, 0, false)),
+            Ok(Pending)
+        );
+        assert_eq!(
+            plan.process_block(&mut output, &mut workspace, &block, bad),
+            Ok(Dropped(reason))
+        );
+        assert_eq!(workspace.sequence(), None);
+        assert_eq!(output, [99; 64]);
+    }
+    for (sequence, discontinuity) in [(11, true), (12, false)] {
+        assert_eq!(
+            plan.process_block(
+                &mut output,
+                &mut workspace,
+                &block,
+                info(sequence, 0, false)
+            ),
+            Ok(Pending)
+        );
+        assert_eq!(
+            plan.process_block(&mut output, &mut workspace, &block, info(sequence, 1, true)),
+            Ok(Complete {
+                sequence,
+                discontinuity
+            })
+        );
+    }
+    assert_eq!(output, [1; 64]);
+}

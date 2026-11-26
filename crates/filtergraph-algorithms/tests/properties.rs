@@ -651,3 +651,179 @@ fn portable_binding_publishes_one_update_and_adopts_at_a_process_boundary() {
         fixture.update.active_generation
     );
 }
+
+#[test]
+fn malformed_property_metadata_reports_the_field_to_fix() {
+    use PropertySchemaError::*;
+    use PropertyValue::*;
+
+    let base = PropertyInfo {
+        id: 8,
+        name: "mode",
+        description: "Active measurement mode",
+        unit: "1",
+        update: PropertyUpdate::Runtime,
+        default_value: Id(0),
+        constraint: PropertyConstraint::Choices(&MODE_CHOICES),
+    };
+    fn check(info: PropertyInfo<'_>, expected: PropertySchemaError, diagnostic: &str) {
+        let error = validate_property_info(info).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(diagnostic), "{error}");
+    }
+    for (info, error, detail) in [
+        (
+            PropertyInfo { name: "", ..base },
+            EmptyName { id: 8 },
+            "empty name",
+        ),
+        (
+            PropertyInfo {
+                description: "",
+                ..base
+            },
+            EmptyDescription { id: 8 },
+            "empty description",
+        ),
+        (
+            PropertyInfo { unit: "", ..base },
+            EmptyUnit { id: 8 },
+            "empty unit",
+        ),
+        (
+            PropertyInfo {
+                default_value: Int(0),
+                ..base
+            },
+            ConstraintType { id: 8 },
+            "incompatible constraint type",
+        ),
+        (
+            PropertyInfo {
+                default_value: Id(7),
+                ..base
+            },
+            InvalidDefault { id: 8 },
+            "invalid default",
+        ),
+        (
+            PropertyInfo {
+                constraint: PropertyConstraint::Choices(&[]),
+                ..base
+            },
+            EmptyChoices { id: 8 },
+            "no choices",
+        ),
+    ] {
+        check(info, error, detail);
+    }
+
+    let first = MODE_CHOICES[0];
+    let second = MODE_CHOICES[1];
+    for (choice, error, detail) in [
+        (
+            PropertyChoice { name: "", ..second },
+            EmptyChoiceName { id: 8, index: 1 },
+            "choice 1 has an empty name",
+        ),
+        (
+            PropertyChoice {
+                name: first.name,
+                ..second
+            },
+            DuplicateChoiceName {
+                id: 8,
+                first: 0,
+                second: 1,
+            },
+            "choices 0 and 1 have the same name",
+        ),
+        (
+            PropertyChoice {
+                value: first.value,
+                ..second
+            },
+            DuplicateChoiceValue {
+                id: 8,
+                first: 0,
+                second: 1,
+            },
+            "choices 0 and 1 have the same value",
+        ),
+    ] {
+        let choices = [first, choice];
+        check(
+            PropertyInfo {
+                constraint: PropertyConstraint::Choices(&choices),
+                ..base
+            },
+            error,
+            detail,
+        );
+    }
+}
+
+#[test]
+fn numeric_property_ranges_preserve_storage_types_and_include_endpoints() {
+    use PropertyValue::*;
+    use filtergraph_algorithms::property_value_satisfies;
+
+    for (minimum, maximum, outside, wrong_type) in [
+        (Int(-3), Int(4), Int(5), Long(4)),
+        (
+            Long(i64::MAX - 2),
+            Long(i64::MAX),
+            Long(i64::MAX - 3),
+            Int(4),
+        ),
+        (Float(-1.0), Float(1.0), Float(f32::NAN), Double(1.0)),
+        (Double(-1.0), Double(1.0), Double(f64::INFINITY), Float(1.0)),
+        (Id(2), Id(9), Id(1), Int(9)),
+    ] {
+        let info = PropertyInfo {
+            id: 4,
+            name: "limit",
+            description: "Measurement limit",
+            unit: "1",
+            update: PropertyUpdate::Runtime,
+            default_value: minimum,
+            constraint: PropertyConstraint::Range { minimum, maximum },
+        };
+        assert_eq!(validate_property_info(info), Ok(()));
+        assert!(property_value_satisfies(info, minimum));
+        assert!(property_value_satisfies(info, maximum));
+        assert!(!property_value_satisfies(info, outside));
+        assert!(!property_value_satisfies(info, wrong_type));
+
+        let invalid_default = PropertyInfo {
+            default_value: outside,
+            ..info
+        };
+        assert_eq!(
+            validate_property_info(invalid_default),
+            Err(PropertySchemaError::InvalidDefault { id: 4 })
+        );
+        let reversed = PropertyInfo {
+            constraint: PropertyConstraint::Range {
+                minimum: maximum,
+                maximum: minimum,
+            },
+            ..info
+        };
+        let error = validate_property_info(reversed).unwrap_err();
+        assert_eq!(error, PropertySchemaError::InvalidRange { id: 4 });
+        assert_eq!(error.to_string(), "property id 4 has an invalid range");
+
+        let wrong_kind = PropertyInfo {
+            constraint: PropertyConstraint::Range {
+                minimum,
+                maximum: wrong_type,
+            },
+            ..info
+        };
+        assert_eq!(
+            validate_property_info(wrong_kind),
+            Err(PropertySchemaError::ConstraintType { id: 4 })
+        );
+    }
+}
