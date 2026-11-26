@@ -1,0 +1,29 @@
+[package]
+name = "filtergraph-fgn"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "FGN C ABI adapter for FilterGraph algorithms"
+
+[features]
+default = []
+blas = ["filtergraph-algorithms/blas"]
+# Compatibility feature; the selected backend is now OpenBLAS.
+oxiblas = ["blas"]
+
+[dependencies]
+filtergraph-algorithms = { path = "../filtergraph-algorithms", default-features = false }
+serde.workspace = true
+serde_json.workspace = true
+
+[[example]]
+name = "filtergraph-fgn-panic-fixture"
+crate-type = ["cdylib"]
+
+[lints.rust]
+missing_docs = "warn"
+
+[[example]]
+name = "filtergraph-fgn-metadata-fixture"
+crate-type = ["cdylib"]

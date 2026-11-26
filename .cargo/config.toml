@@ -1,0 +1,9 @@
+[env]
+# Compile CPU-dispatched OpenBLAS kernels, independent of Rust's target-cpu.
+OPENBLAS_DYNAMIC_ARCH = "1"
+# One control-loop call uses one CPU; do not nest BLAS worker parallelism.
+OPENBLAS_NUM_THREADS = { value = "1", force = true }
+# LP64 bindings require 32-bit BLAS integers, regardless of the parent shell.
+INTERFACE64 = { value = "0", force = true }
+# Single-thread OpenBLAS still shares a scratch pool across independent callers.
+OPENBLAS_USE_LOCKING = { value = "1", force = true }

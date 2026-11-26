@@ -1,0 +1,26 @@
+schema = "org.calculon.algorithm-fixture/docrime-interaction-matrix/1"
+sample_count = 3
+measurement_count = 2
+corrector_coordinate_count = 2
+
+# Matrices are row-major, with measurement rows and corrector columns.
+measurement_corrector_cross_covariance_sum = [6.0, 0.0, 8.0, 13.0]
+corrector_covariance_sum = [4.0, 2.0, 2.0, 4.0]
+expected_open_loop_interaction_matrix = [2.0, -1.0, 0.5, 3.0]
+
+closed_loop_gain = 0.4
+expected_closed_loop_interaction_matrix = [0.8, -0.4, 0.2, 1.2]
+
+absolute_tolerance_f64 = 1.0e-12
+absolute_tolerance_f32 = 2.0e-6
+
+[conditioning_criteria]
+minimum_corrector_variance = 0.1
+maximum_absolute_corrector_correlation = 0.9
+minimum_factorization_pivot_ratio = 0.01
+
+[expected_diagnostics]
+minimum_corrector_variance = 2.0
+maximum_corrector_variance = 2.0
+maximum_absolute_corrector_correlation = 0.5
+minimum_factorization_pivot_ratio = 0.75

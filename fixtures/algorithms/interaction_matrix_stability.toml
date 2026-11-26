@@ -1,0 +1,23 @@
+schema = "org.calculon.algorithm-fixture/interaction-matrix-stability/1"
+measurement_count = 2
+corrector_coordinate_count = 2
+
+# Matrices are serialized row-major, with measurement rows and corrector
+# columns. The second window scales each column by two.
+first_window = [1.0, 0.0, 0.0, 1.0]
+second_window = [2.0, 0.0, 0.0, 2.0]
+
+minimum_column_norm = 0.1
+maximum_relative_column_difference = 0.5
+maximum_relative_frobenius_difference = 0.5
+
+expected_status = "excessive_relative_column_difference"
+expected_status_corrector_coordinate_zero_based = 0
+expected_minimum_first_window_column_norm = 1.0
+expected_minimum_second_window_column_norm = 2.0
+expected_maximum_relative_column_difference = 0.6666666666666666
+expected_maximum_relative_column_difference_coordinate_zero_based = 0
+expected_relative_frobenius_difference = 0.6666666666666666
+
+absolute_tolerance_f64 = 1.0e-12
+absolute_tolerance_f32 = 2.0e-6

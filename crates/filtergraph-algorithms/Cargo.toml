@@ -1,0 +1,34 @@
+[package]
+name = "filtergraph-algorithms"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Transport-independent algorithm plan API for FilterGraph"
+
+[features]
+default = ["blas"]
+# Native Float methods provide LLVM FMA intrinsics; the no-default profile
+# retains num-traits/libm and no_std support.
+blas = ["dep:filtergraph-blas", "num-traits/std"]
+# Compatibility with existing deployment commands; selects the current BLAS backend.
+oxiblas = ["blas"]
+experimental-simd-gemv = ["blas", "filtergraph-blas/experimental-simd-gemv"]
+# Experimental Float32 full-to-active VDM reduction with compact coefficients.
+experimental-compact-projection = ["blas"]
+
+[dependencies]
+num-traits.workspace = true
+filtergraph-blas = { path = "../filtergraph-blas", optional = true }
+serde = { version = "1.0.228", default-features = false, features = ["alloc", "derive"] }
+
+[dev-dependencies]
+serde_json.workspace = true
+toml.workspace = true
+
+[[bench]]
+name = "detector_readout"
+harness = false
+
+[lints.rust]
+missing_docs = "warn"

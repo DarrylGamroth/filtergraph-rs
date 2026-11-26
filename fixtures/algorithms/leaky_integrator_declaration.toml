@@ -1,0 +1,48 @@
+[declaration]
+label = "leaky-integrator-f32"
+property_policy = "runtime"
+
+[[configuration]]
+name = "extent"
+type = "extent"
+update = "graph-rebuild"
+
+[[configuration]]
+name = "initial_state"
+type = "float32"
+update = "construction"
+
+[[configuration]]
+name = "input_schema"
+type = "string"
+update = "graph-rebuild"
+
+[[configuration]]
+name = "output_schema"
+type = "string"
+update = "graph-rebuild"
+
+[[ports]]
+name = "input"
+direction = "input"
+role = "data"
+element_type = "float32"
+shape = ["extent"]
+schema = "pipewireao/controller-residual-error-f32/1"
+
+[[ports]]
+name = "output"
+direction = "output"
+role = "data"
+element_type = "float32"
+shape = ["extent"]
+schema = "pipewireao/controller-command-f32/1"
+metadata_from = "input"
+
+[native]
+extent = 3
+initial_state = 0.25
+input_schema = "pipewireao/controller-residual-error-f32/1"
+output_schema = "pipewireao/controller-command-f32/1"
+inputs = [[1.0, -2.0, 3.0], [0.5, 0.25, -0.75]]
+outputs = [[1.0, -2.0, 3.0], [0.5, 0.25, -0.75]]

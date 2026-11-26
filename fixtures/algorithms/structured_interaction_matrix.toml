@@ -1,0 +1,37 @@
+schema = "org.calculon.algorithm-fixture/structured-interaction-matrix/1"
+absolute_tolerance_f64 = 1.0e-12
+absolute_tolerance_f32 = 2.0e-6
+
+[zonal]
+measurement_count = 2
+corrector_coordinate_count = 3
+amplitudes = [0.5, 2.0, 1.5]
+
+# Responses and interaction matrices are serialized row-major in their
+# documented logical orientations.
+responses = [
+    10.5, -6.75,
+    9.5, -7.25,
+    14.0, -11.0,
+    6.0, -3.0,
+    8.5, -1.0,
+    11.5, -13.0,
+]
+expected_interaction_matrix = [1.0, 2.0, -1.0, 0.5, -2.0, 4.0]
+
+[hadamard]
+measurement_count = 2
+corrector_coordinate_count = 3
+order = 4
+amplitudes = [0.25, 2.0, 0.5]
+responses = [
+    95.25, -22.875,
+    104.75, -37.125,
+    92.75, -21.125,
+    107.25, -38.875,
+    105.25, -36.875,
+    94.75, -23.125,
+    106.75, -39.125,
+    93.25, -20.875,
+]
+expected_interaction_matrix = [1.0, -3.0, 2.0, 0.5, 4.0, -2.0]

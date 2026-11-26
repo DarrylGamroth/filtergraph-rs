@@ -1,0 +1,20 @@
+[package]
+name = "filtergraph-blas"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Checked CBLAS boundary for FilterGraph's native CPU kernels"
+
+[features]
+experimental-simd-gemv = []
+
+[dependencies]
+cblas = "=0.5.0"
+openblas-src = { version = "=0.10.16", default-features = false, features = ["cblas", "static", "cache", "rustls"] }
+
+[build-dependencies]
+cc = "1.2"
+
+[lints.rust]
+missing_docs = "warn"

@@ -1,0 +1,26 @@
+[package]
+name = "filtergraph-fgn-bundle"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Production FGN bundle selected from portable FilterGraph declarations"
+build = "build.rs"
+
+[features]
+default = ["blas"]
+blas = ["filtergraph-fgn/blas"]
+# Compatibility feature; the selected backend is now OpenBLAS.
+oxiblas = ["blas"]
+experimental-simd-gemv = ["blas", "filtergraph-algorithms/experimental-simd-gemv"]
+experimental-compact-projection = ["blas", "filtergraph-algorithms/experimental-compact-projection"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+filtergraph-algorithms = { path = "../filtergraph-algorithms", default-features = false }
+filtergraph-fgn = { path = "../filtergraph-fgn", default-features = false }
+
+[lints.rust]
+missing_docs = "warn"

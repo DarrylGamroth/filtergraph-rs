@@ -1,0 +1,27 @@
+schema = "org.calculon.algorithm-fixture/reconstructor-preparation/1"
+measurement_count = 3
+corrector_coordinate_count = 2
+retained_rank = 2
+truncated_rank = 1
+tikhonov_scale = 0.35
+
+# Matrices are serialized row-major in their documented logical orientation.
+interaction_matrix = [1.0, 2.0, 3.0, -1.0, 0.5, 1.5]
+measurement_noise_covariance = [2.0, 0.3, 0.1, 0.3, 1.5, 0.2, 0.1, 0.2, 1.0]
+corrector_stroke_metric = [1.4, 0.25, 0.25, 0.8]
+
+expected_singular_values = [3.0937554374675034, 1.7957792750252688]
+expected_tikhonov_gains = [0.3191471033690596, 0.5364821874839979]
+expected_reconstructor = [0.0777011630774617, 0.28410161294557607, 0.07974236268850748, 0.20599781397672995, -0.1224263416313299, 0.297645018173855]
+expected_truncated_reconstructor = [-0.05712298361971336, 0.12318672679194266, -0.09132525341441516, 0.109935641515414, -0.23707815975114174, 0.17575938237943645]
+
+expected_condition_number = 1.7227927064833568
+expected_full_response_residual = 2.0177357355791246e-16
+expected_full_reconstructor_residual = 0.0
+expected_full_stroke_noise_amplification = 0.624233939382085
+expected_truncated_response_residual = 0.5020111500786387
+expected_truncated_reconstructor_residual = 0.6799770902207374
+expected_truncated_stroke_noise_amplification = 0.3191471033690596
+
+absolute_tolerance_f64 = 1.0e-12
+absolute_tolerance_f32 = 3.0e-6

@@ -1,0 +1,2 @@
+# Canonical declarations currently need no Rust-only scientific schema extensions.
+schemas = []

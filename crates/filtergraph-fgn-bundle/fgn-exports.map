@@ -1,0 +1,7 @@
+{
+    global:
+        filtergraph_software_version;
+        spa_filter_graph_ndarray_plugin_get_interface;
+    local:
+        *;
+};

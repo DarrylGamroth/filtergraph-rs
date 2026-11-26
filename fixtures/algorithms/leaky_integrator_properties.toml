@@ -1,0 +1,21 @@
+[property]
+gain_id = 0
+gain_name = "gain"
+pole_id = 1
+pole_name = "pole"
+unit = "1"
+
+[initial]
+gain = 0.5
+pole = 0.75
+state = [4.0, -4.0]
+input = [2.0, 2.0]
+output = [4.0, -2.0]
+
+[update]
+gain = -0.25
+pole = 0.5
+input = [4.0, -4.0]
+output = [1.0, 0.0]
+requested_generation = 1
+active_generation = 1
