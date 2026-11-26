@@ -60,7 +60,8 @@ jobs:
           git -C "$source_dir" fetch --no-tags --depth 1 https://github.com/DarrylGamroth/PipeWireAO.git "$PIPEWIREAO_REVISION"
           git -C "$source_dir" checkout --detach "$PIPEWIREAO_REVISION"
           meson setup "$source_dir/build" "$source_dir" \
-            -Dauto_features=disabled -Dspa-plugins=enabled -Ddocs=disabled -Dexamples=disabled -Dtests=disabled
+            -Dauto_features=disabled -Dflatpak=disabled -Dspa-plugins=enabled \
+            -Ddocs=disabled -Dexamples=disabled -Dtests=disabled
 
       - name: Run Rust and native-host tests with coverage
         run: |
