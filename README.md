@@ -25,8 +25,8 @@ Rust matrix-vector multiplication. See the [BLAS notes](docs/blas-simd.md) for
 the default backend and scratch limits.
 
 GitHub CI combines Rust line coverage from the default, portable, and
-all-features tests and the synthetic native FGN graph tests. The Codecov project
-target is above 90%.
+all-features builds, selected AVX2/FMA tests, and the synthetic native FGN
+graph tests. The Codecov project target is above 90%.
 
 ## Use with PipeWireAO
 

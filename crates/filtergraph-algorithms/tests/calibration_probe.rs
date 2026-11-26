@@ -578,18 +578,19 @@ fn preparation_rejects_empty_and_invalid_amplitudes() {
         Err(CalibrationProbePlanError::Empty)
     );
     for amplitude in [0.0_f32, -1.0, f32::NAN, f32::INFINITY] {
-        assert_eq!(
-            ZonalPushPullPlan::new([1.0, amplitude]),
-            Err(CalibrationProbePlanError::InvalidAmplitude {
-                corrector_coordinate: 1,
-            })
-        );
-        assert_eq!(
-            HadamardPushPullPlan::new([1.0, amplitude]),
-            Err(CalibrationProbePlanError::InvalidAmplitude {
-                corrector_coordinate: 1,
-            })
-        );
+        let expected = CalibrationProbePlanError::InvalidAmplitude {
+            corrector_coordinate: 1,
+        };
+        let zonal = ZonalPushPullPlan::new([1.0, amplitude]).unwrap_err();
+        let hadamard = HadamardPushPullPlan::new([1.0, amplitude]).unwrap_err();
+        for error in [zonal, hadamard] {
+            assert_eq!(error, expected);
+            assert!(
+                error
+                    .to_string()
+                    .contains("corrector coordinate 1 must be finite and positive")
+            );
+        }
     }
 }
 
@@ -603,16 +604,24 @@ fn rejected_output_or_workspace_preserves_zonal_sequence_and_outputs() {
     let mut short_output = [7.0];
     let mut step = CalibrationProbeStep::default();
 
-    assert_eq!(
-        plan.process(
+    let error = plan
+        .process(
             CalibrationProbeOutput::new(&mut short_output, &mut step),
             &mut workspace,
             (),
-        ),
-        Err(CalibrationProbeError::OutputExtent {
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        CalibrationProbeError::OutputExtent {
             expected: 2,
-            actual: 1,
-        })
+            actual: 1
+        }
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("output extent 1 does not match 2")
     );
     assert_eq!(short_output, [7.0]);
     assert_eq!(step, CalibrationProbeStep::default());

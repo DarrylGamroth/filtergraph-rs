@@ -528,3 +528,50 @@ fn geometry_diagnostics_distinguish_missing_pixels_from_invalid_coordinate_steps
         assert!(error.to_string().contains(detail), "{error}");
     }
 }
+
+#[test]
+fn frame_supersession_and_skipped_blocks_do_not_mix_acquisitions() {
+    use DetectorReadoutDropReason::AcquisitionOrder;
+    use DetectorReadoutResult::*;
+    let readout = DetectorReadoutPlan::new(
+        (3, 2),
+        3,
+        1,
+        2,
+        [DetectorReadoutRegion::new((0, 0), (1, 0), (0, 1))],
+    )
+    .unwrap();
+    let plan = DetectorFrameAssemblerPlan::new(readout);
+    let mut workspace = plan.workspace::<u16>();
+    let mut output = [77; 6];
+    for (sequence, ordinal, values, expected) in [
+        (101, 0, [1, 1], Pending),
+        (101, 2, [2, 2], Dropped(AcquisitionOrder)),
+        (102, 0, [3, 3], Pending),
+        (103, 0, [4, 4], Pending),
+        (103, 1, [5, 5], Pending),
+        (
+            103,
+            2,
+            [6, 6],
+            Complete {
+                sequence: 103,
+                discontinuity: true,
+            },
+        ),
+    ] {
+        let outcome = plan
+            .process_block(
+                &mut output,
+                &mut workspace,
+                &values,
+                info(sequence, ordinal, ordinal == 2),
+            )
+            .unwrap();
+        assert_eq!(outcome, expected);
+        if !matches!(outcome, Complete { .. }) {
+            assert_eq!(output, [77; 6]);
+        }
+    }
+    assert_eq!(output, [4, 4, 5, 5, 6, 6]);
+}

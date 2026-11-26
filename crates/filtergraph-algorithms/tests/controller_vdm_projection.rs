@@ -77,3 +77,46 @@ fn forward_and_reverse_projections_are_not_inferred_from_each_other() {
     assert_eq!(command, [22.0, 33.0]);
     assert_eq!(feedback, [184.0]);
 }
+
+#[test]
+fn projection_admission_rejects_incompatible_controller_domains_and_lengths() {
+    use filtergraph_algorithms::ControllerProjectionError::*;
+    for (command_count, forward, reverse, expected, diagnostic) in [
+        (
+            0,
+            &[1.0_f32][..],
+            &[1.0][..],
+            EmptyDimension,
+            "dimensions must be nonempty",
+        ),
+        (
+            2,
+            &[1.0][..],
+            &[1.0][..],
+            ProjectionExtent,
+            "projection extent is invalid",
+        ),
+        (
+            1,
+            &[1.0, f32::NAN][..],
+            &[1.0; 2][..],
+            NonFiniteConfiguration,
+            "projections must be finite",
+        ),
+    ] {
+        let error =
+            ControllerProjection::new(command_count, Arc::from(forward), Arc::from(reverse))
+                .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(diagnostic), "{error}");
+    }
+    let none: Arc<[ControllerProjection<f32>]> = Arc::from([]);
+    let error = ControllerToVdmPlan::new(2, none).unwrap_err();
+    assert_eq!(error, EmptyControllerSet);
+    assert!(error.to_string().contains("at least one controller"));
+    let valid =
+        ControllerProjection::new(2, Arc::from([1.0_f32; 2]), Arc::from([1.0_f32; 2])).unwrap();
+    let error = ControllerToVdmPlan::new(usize::MAX, Arc::from([valid])).unwrap_err();
+    assert_eq!(error, ExtentOverflow);
+    assert!(error.to_string().contains("extent overflow"));
+}

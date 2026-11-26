@@ -343,3 +343,72 @@ fn rejected_calibration_blocks_do_not_consume_pending_plan_discontinuity() {
         assert_eq!(output, expected);
     }
 }
+
+#[test]
+fn readout_configuration_preserves_geometry_failure_through_declaration_admission() {
+    use filtergraph_algorithms::{
+        DeclarationPreparationError, DetectorReadoutProfileError,
+        PixelCalibrationReadoutU16F32PreparationError,
+    };
+    let cfg = |line_steps, size, flat| PixelCalibrationReadoutU16F32Configuration {
+        region_lines: 2,
+        block_lines: 1,
+        region_samples: 4,
+        detector_origins: origins(),
+        detector_line_steps: line_steps,
+        detector_sample_steps: sample_steps(),
+        initial_flat: flat,
+        initial_background: None,
+        detector_size: size,
+    };
+    let error = PixelCalibrationReadoutU16F32::prepare(cfg(vec![[1, 0]], (4, 4), None))
+        .err()
+        .unwrap();
+    assert_eq!(
+        error,
+        DeclarationPreparationError::Algorithm(
+            PixelCalibrationReadoutU16F32PreparationError::Profile(
+                DetectorReadoutProfileError::RegionExtent {
+                    origins: 2,
+                    line_steps: 1,
+                    sample_steps: 2,
+                }
+            )
+        )
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("2 origins, 1 line steps, and 2 sample steps")
+    );
+
+    let error = PixelCalibrationReadoutU16F32::prepare(cfg(line_steps(), (4, 3), None))
+        .err()
+        .unwrap();
+    assert!(matches!(
+        error,
+        DeclarationPreparationError::Algorithm(
+            PixelCalibrationReadoutU16F32PreparationError::Profile(
+                DetectorReadoutProfileError::Mapping(_)
+            )
+        )
+    ));
+    assert!(
+        error
+            .to_string()
+            .contains("pixel extent 16 does not match detector extent 12")
+    );
+
+    let mut flat = vec![1.0; 16];
+    flat[1] = f32::NAN;
+    let error = PixelCalibrationReadoutU16F32::prepare(cfg(line_steps(), (4, 4), Some(flat)))
+        .err()
+        .unwrap();
+    assert!(matches!(
+        error,
+        DeclarationPreparationError::Algorithm(
+            PixelCalibrationReadoutU16F32PreparationError::Calibration(_)
+        )
+    ));
+    assert!(error.to_string().contains("flat value at index 1"));
+}

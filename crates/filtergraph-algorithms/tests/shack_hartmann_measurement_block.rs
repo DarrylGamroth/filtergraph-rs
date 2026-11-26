@@ -263,6 +263,12 @@ fn loss_does_not_modify_outputs_and_recovery_marks_next_start() {
 fn replacement_and_reset_do_not_carry_partial_frame_measurements() {
     let plan = ShackHartmannMeasurementBlockPlan::new(sensing(&ORIGINS), 1).unwrap();
     let replaced = plan
+        .with_u32_subaperture_origins(&[0, 0, 0, 2, 2, 0, 2, 2])
+        .unwrap()
+        .with_pair_interleaved_coordinates(&[0.0, 0.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0])
+        .unwrap()
+        .with_pair_interleaved_thresholds(&[1.0, 0.0, 1.0, 3.0, 2.0, 0.0, 1.0, 0.0])
+        .unwrap()
         .with_reference_slopes(&[0.3; 8])
         .unwrap()
         .with_active(&[true, false, true, false])

@@ -363,3 +363,33 @@ fn packed_region_view_checks_extents_before_borrowing_storage() {
         assert!(error.to_string().contains(detail), "{error}");
     }
 }
+
+#[test]
+fn rejected_origin_updates_leave_the_original_padded_plan_intact() {
+    let plan = padded_plan();
+    let error = plan.with_u32_origins(&[0, 0, 0]).unwrap_err();
+    assert_eq!(
+        error,
+        RegionExtractionError::OriginCoordinateExtent {
+            expected: 4,
+            actual: 3
+        }
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("coordinate extent 3 does not match 4")
+    );
+    let error = plan.with_u32_origins(&[0, 0, 1, 3]).unwrap_err();
+    assert_eq!(
+        error,
+        RegionExtractionError::RegionOutOfBounds { region: 1 }
+    );
+    assert!(error.to_string().contains("region 1"));
+    let updated = plan.with_u32_origins(&[0, 2, 0, 0]).unwrap();
+    assert_eq!(updated.origins(), [(0, 2), (0, 0)]);
+    assert_eq!(updated.row_stride(), 4);
+    assert_eq!(plan.row_stride(), 6);
+    assert_eq!(updated.first_pixel(), 0);
+    assert_eq!(plan.first_pixel(), 2);
+}

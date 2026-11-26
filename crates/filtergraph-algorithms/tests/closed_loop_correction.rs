@@ -246,3 +246,96 @@ fn runtime_properties_preserve_dimensions_and_hidden_mode_projections() {
     assert_eq!(replacement.shape_to_hidden().as_ptr(), shape_to_hidden);
     assert_eq!(replacement.hidden_to_shape().as_ptr(), hidden_to_shape);
 }
+
+#[test]
+fn feedback_admission_reports_bad_phase_extent_and_values_without_advancing_state() {
+    use ClosedLoopCorrectionError::*;
+    let plan = ClosedLoopCorrectionPlan::new(0.5_f32, 1.0, 1.0, 2).unwrap();
+    let mut workspace = plan.workspace();
+    let mut output = [17.0; 2];
+    let command = [2.0; 2];
+    let error = plan
+        .process(
+            &mut output,
+            &mut workspace,
+            ClosedLoopCorrectionInput {
+                x: &command,
+                constraint_feedback: Some(&[0.0; 2]),
+            },
+        )
+        .unwrap_err();
+    assert_eq!(error, UnexpectedFeedback);
+    assert!(error.to_string().contains("preceded the first correction"));
+    assert_eq!(output, [17.0; 2]);
+    plan.process(
+        &mut output,
+        &mut workspace,
+        ClosedLoopCorrectionInput {
+            x: &command,
+            constraint_feedback: None,
+        },
+    )
+    .unwrap();
+    let committed = workspace.state().to_vec();
+    let published = output;
+    for (input, feedback, nout, expected, detail) in [
+        (
+            &command[..1],
+            Some(&[0.0; 2][..]),
+            2,
+            InputExtent,
+            "input extent",
+        ),
+        (
+            &command[..],
+            Some(&[0.0; 2][..]),
+            1,
+            OutputExtent,
+            "output extent",
+        ),
+        (
+            &command[..],
+            None,
+            2,
+            MissingFeedback,
+            "feedback is missing",
+        ),
+        (
+            &command[..],
+            Some(&[0.0][..]),
+            2,
+            FeedbackExtent,
+            "feedback extent",
+        ),
+        (
+            &command[..],
+            Some(&[0.0, f32::NAN][..]),
+            2,
+            NonFiniteFeedback,
+            "feedback must be finite",
+        ),
+        (
+            &[f32::INFINITY, 0.0][..],
+            Some(&[0.0; 2][..]),
+            2,
+            NonFiniteInput,
+            "input must be finite",
+        ),
+    ] {
+        let error = plan
+            .process(
+                &mut output[..nout],
+                &mut workspace,
+                ClosedLoopCorrectionInput {
+                    x: input,
+                    constraint_feedback: feedback,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(workspace.state(), committed);
+        assert_eq!(workspace.last_output(), Some(&published[..]));
+        assert_eq!(output, published);
+    }
+}
