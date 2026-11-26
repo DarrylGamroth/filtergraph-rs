@@ -588,6 +588,7 @@ fn malformed_inputs_and_calculations_preserve_both_outputs() {
                 expected: 2,
                 actual: 1,
             },
+            "MeasurementCorrectorCrossCovarianceSum extent 1 does not match 2",
         ),
         (
             DocrimeCovariances::new(2, &cross, &short_corrector),
@@ -596,6 +597,7 @@ fn malformed_inputs_and_calculations_preserve_both_outputs() {
                 expected: 4,
                 actual: 3,
             },
+            "CorrectorCovarianceSum extent 3 does not match 4",
         ),
         (
             DocrimeCovariances::new(2, &nonfinite_cross, &corrector),
@@ -603,6 +605,7 @@ fn malformed_inputs_and_calculations_preserve_both_outputs() {
                 input: DocrimeInteractionMatrixInputKind::MeasurementCorrectorCrossCovarianceSum,
                 index: 0,
             },
+            "MeasurementCorrectorCrossCovarianceSum coefficient at index 0",
         ),
         (
             DocrimeCovariances::new(2, &cross, &nonfinite_corrector),
@@ -610,22 +613,25 @@ fn malformed_inputs_and_calculations_preserve_both_outputs() {
                 input: DocrimeInteractionMatrixInputKind::CorrectorCovarianceSum,
                 index: 3,
             },
+            "CorrectorCovarianceSum coefficient at index 3",
         ),
         (
             DocrimeCovariances::new(2, &cross, &asymmetric_corrector),
             DocrimeInteractionMatrixError::NonSymmetricCorrectorCovariance { row: 0, column: 1 },
+            "differs at (0, 1) and (1, 0)",
         ),
     ];
 
-    for (covariances, expected) in cases {
-        assert_eq!(
-            plan.process(
-                DocrimeInteractionMatrixOutput::new(&mut interaction_matrix, &mut diagnostics,),
+    for (covariances, expected, diagnostic) in cases {
+        let error = plan
+            .process(
+                DocrimeInteractionMatrixOutput::new(&mut interaction_matrix, &mut diagnostics),
                 &mut workspace,
                 covariances,
-            ),
-            Err(expected)
-        );
+            )
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(diagnostic), "{error}");
         assert_eq!(interaction_matrix, [7.0, 8.0]);
         assert_eq!(diagnostics, unchanged_diagnostics);
     }

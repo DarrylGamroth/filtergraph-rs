@@ -4,7 +4,8 @@ use filtergraph_algorithms::schemas::{CALIBRATED_PIXELS_V1, REGION_ORIGINS_V1, R
 use filtergraph_algorithms::{
     AlgorithmDeclaration, AlgorithmInput, AlgorithmPlan, DeclarationParameterError, InputProgress,
     ProcessError, ProgressResult, RegionExtractionError, RegionExtractionF32,
-    RegionExtractionF32Configuration, RegionExtractionPlan, RegionPixelsError, RegionPixelsMut,
+    RegionExtractionF32Configuration, RegionExtractionPlan, RegionPixels, RegionPixelsError,
+    RegionPixelsMut,
 };
 
 fn compact_plan() -> RegionExtractionPlan<f32> {
@@ -260,4 +261,105 @@ fn declaration_matches_packed_extraction_and_adopts_origins() {
     );
     RegionExtractionF32::process(&mut declared, &image, &mut regions).unwrap();
     assert_eq!(regions, [1.0, 2.0, 6.0, 7.0, 12.0, 13.0, 17.0, 18.0]);
+}
+
+#[test]
+fn malformed_detector_geometry_reports_logical_extent_or_physical_layout() {
+    use RegionExtractionError::*;
+    for (image, regions, size, stride, offset, expected, detail) in [
+        (
+            (0, 3),
+            &[(0, 0)][..],
+            (1, 1),
+            3,
+            0,
+            EmptyImage,
+            "image dimensions must be positive",
+        ),
+        (
+            (3, 3),
+            &[(0, 0)][..],
+            (0, 1),
+            3,
+            0,
+            EmptyRegion,
+            "region dimensions must be positive",
+        ),
+        (
+            (3, 3),
+            &[][..],
+            (1, 1),
+            3,
+            0,
+            EmptyOrigins,
+            "at least one region",
+        ),
+        (
+            (3, 3),
+            &[(0, 0)][..],
+            (1, 1),
+            2,
+            0,
+            RowStrideTooSmall,
+            "row stride must contain every logical image column",
+        ),
+        (
+            (3, 3),
+            &[(0, 0), (2, 2)][..],
+            (2, 2),
+            8,
+            0,
+            RegionOutOfBounds { region: 1 },
+            "region 1 lies outside",
+        ),
+        (
+            (3, 3),
+            &[(0, 0)][..],
+            (1, 1),
+            8,
+            usize::MAX,
+            LayoutOverflow,
+            "detector layout overflows",
+        ),
+    ] {
+        let error = RegionExtractionPlan::<f32>::with_layout(image, regions, size, stride, offset)
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
+}
+
+#[test]
+fn packed_region_view_checks_extents_before_borrowing_storage() {
+    use RegionPixelsError::*;
+    for (pixels, regions, stride, expected, detail) in [
+        (0, 1, 1, EmptyRegion, "region must contain pixels"),
+        (2, 0, 2, EmptySlab, "at least one region"),
+        (
+            2,
+            2,
+            1,
+            StrideTooSmall {
+                pixel_count: 2,
+                stride: 1,
+            },
+            "stride 1 is smaller than pixel count 2",
+        ),
+        (2, 2, usize::MAX, LayoutOverflow, "region layout overflows"),
+        (
+            2,
+            2,
+            5,
+            StorageTooSmall {
+                required: 7,
+                actual: 4,
+            },
+            "storage extent 4 is smaller than required extent 7",
+        ),
+    ] {
+        let error =
+            RegionPixels::<f32>::with_stride(&[0.0; 4], pixels, regions, stride).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
 }

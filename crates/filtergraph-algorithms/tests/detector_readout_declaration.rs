@@ -259,3 +259,87 @@ fn readout_calibration_consumes_pending_discontinuity_after_plan_adoption() {
 fn readout_calibration_consumes_pending_discontinuity_after_reset() {
     check_readout_pending_discontinuity(true);
 }
+
+#[test]
+fn rejected_calibration_blocks_do_not_consume_pending_plan_discontinuity() {
+    use filtergraph_algorithms::{
+        DeclarationProcessError, DetectorReadoutCalibrationProcessError as E, NativeProcessError,
+    };
+
+    let mut calibration =
+        PixelCalibrationReadoutU16F32::prepare(PixelCalibrationReadoutU16F32Configuration {
+            region_lines: 2,
+            block_lines: 1,
+            region_samples: 4,
+            detector_origins: origins(),
+            detector_line_steps: line_steps(),
+            detector_sample_steps: sample_steps(),
+            initial_flat: None,
+            initial_background: None,
+            detector_size: (4, 4),
+        })
+        .unwrap();
+    let backgrounds: Vec<_> = (1..=16).map(|background| background as f32).collect();
+    let port = PixelCalibrationReadoutU16F32::PORTS
+        .iter()
+        .position(|port| port.name() == "background")
+        .unwrap();
+    calibration
+        .replace_parameter(port, AlgorithmInput::from(backgrounds.as_slice()))
+        .unwrap()
+        .unwrap();
+    let mut output = [83.0; 8];
+    for (sample, expected, detail) in [
+        (
+            None,
+            E::MissingSampleMetadata,
+            "sample metadata is required",
+        ),
+        (
+            Some(sample(1, 2)),
+            E::OrdinalRange {
+                ordinal: 2,
+                blocks: 2,
+            },
+            "ordinal 2 is outside 2",
+        ),
+        (
+            Some(sample(1, 0).with_terminal(true)),
+            E::Terminal,
+            "terminal marker",
+        ),
+    ] {
+        let error = PixelCalibrationReadoutU16F32::process_with_metadata(
+            &mut calibration,
+            &[sample],
+            &[20; 8],
+            &mut output,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            NativeProcessError::Process(DeclarationProcessError::Algorithm(expected))
+        );
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(output, [83.0; 8]);
+    }
+
+    for (ordinal, expected) in [
+        (0, [19.0, 18.0, 17.0, 16.0, 7.0, 6.0, 5.0, 4.0]),
+        (1, [15.0, 14.0, 13.0, 12.0, 11.0, 10.0, 9.0, 8.0]),
+    ] {
+        let metadata = sample(7, ordinal);
+        let result = PixelCalibrationReadoutU16F32::process_with_metadata(
+            &mut calibration,
+            &[Some(metadata)],
+            &[20; 8],
+            &mut output,
+        )
+        .unwrap();
+        assert_eq!(
+            result.metadata(),
+            Some(metadata.with_discontinuity(ordinal == 0))
+        );
+        assert_eq!(output, expected);
+    }
+}

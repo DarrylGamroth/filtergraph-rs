@@ -468,3 +468,76 @@ fn declaration_keeps_worker_selection_out_of_scientific_configuration() {
         }
     }
 }
+
+#[test]
+fn replacing_pupil_geometry_and_mask_recomputes_scientific_pixel_order() {
+    let (_, original) = plans();
+    // Move the pupil that completed last to the start of the readout and
+    // change which three pixels per pupil contribute to reconstruction.
+    let origins = [0_u32, 0, 6, 0, 0, 4, 6, 4];
+    let mask = [false, true, true, true];
+    let updated = original
+        .with_u32_pupil_origins(&origins)
+        .unwrap()
+        .with_pupil_mask(&mask)
+        .unwrap();
+    let canonical = PyramidPixelImagePlan::from_detector_pupils(
+        (IMAGE_ROWS, IMAGE_COLUMNS),
+        (PUPIL_ROWS, PUPIL_COLUMNS),
+        &[(0, 0), (6, 0), (0, 4), (6, 4)],
+        mask.to_vec(),
+    )
+    .unwrap();
+    let mut workspace = updated.workspace();
+    let mut canonical_workspace = canonical.workspace();
+    let mut expected = [0.0; SELECTED_PIXELS];
+    let mut expected_mean = 0.0;
+    let mut output = [31.0; SELECTED_PIXELS];
+    let mut mean = 31.0;
+    let mut modes = [31.0; RECONSTRUCTED];
+    for sequence in 0..2 {
+        let input = image(sequence);
+        canonical
+            .process(
+                PyramidPixelOutput::new(&mut expected, &mut expected_mean),
+                &mut canonical_workspace,
+                &input,
+            )
+            .unwrap();
+        for (rows, samples) in input.chunks_exact(BLOCK_ROWS * IMAGE_COLUMNS).enumerate() {
+            let outcome = updated
+                .process_block(
+                    PyramidRowReconstructionOutput::new(&mut output, &mut mean, &mut modes),
+                    &mut workspace,
+                    samples,
+                    block_info(sequence as u64, rows * BLOCK_ROWS),
+                )
+                .unwrap();
+            if matches!(outcome, RowBlockResult::Complete { .. }) {
+                assert_eq!(output, expected);
+                assert_eq!(mean, expected_mean);
+                let mut expected_modes = [0.0; RECONSTRUCTED];
+                original
+                    .reconstructor()
+                    .multiply(&mut expected_modes, &expected)
+                    .unwrap();
+                for (actual, expected) in modes.into_iter().zip(expected_modes) {
+                    assert!((actual - expected).abs() < 3.0e-6);
+                }
+            }
+        }
+    }
+
+    let invalid_mask = updated.with_pupil_mask(&[true; 4]).unwrap_err();
+    assert!(
+        invalid_mask.to_string().contains("16 pixels, expected 12"),
+        "{invalid_mask}"
+    );
+    let invalid_origin = updated
+        .with_u32_pupil_origins(&[8, 0, 6, 0, 0, 4, 6, 4])
+        .unwrap_err();
+    assert!(
+        invalid_origin.to_string().contains("region"),
+        "{invalid_origin}"
+    );
+}

@@ -17,39 +17,49 @@ fn assert_near(actual: f64, expected: f64) {
 
 #[test]
 fn schedule_rejects_invalid_modes_and_unsynchronized_windows() {
-    assert_eq!(
-        OpticalGainDitherSchedule::<f32>::new([]).unwrap_err(),
-        OpticalGainDitherScheduleError::Empty
-    );
-    assert_eq!(
-        OpticalGainDitherSchedule::new([OpticalGainDitherMode::new(0.0_f32, 4, 1)]).unwrap_err(),
-        OpticalGainDitherScheduleError::InvalidAmplitude { mode: 0 }
-    );
-    assert_eq!(
-        OpticalGainDitherSchedule::new([OpticalGainDitherMode::new(1.0_f32, 3, 1)]).unwrap_err(),
-        OpticalGainDitherScheduleError::PeriodTooShort { mode: 0, frames: 3 }
-    );
-    assert_eq!(
-        OpticalGainDitherSchedule::new([OpticalGainDitherMode::new(1.0_f32, 4, 0)]).unwrap_err(),
-        OpticalGainDitherScheduleError::ZeroPeriodsPerEstimate { mode: 0 }
-    );
-    assert_eq!(
-        OpticalGainDitherSchedule::new([
-            OpticalGainDitherMode::new(1.0_f32, 4, 2),
-            OpticalGainDitherMode::new(1.0_f32, 5, 2),
-        ])
-        .unwrap_err(),
-        OpticalGainDitherScheduleError::EstimateWindowMismatch {
-            mode: 1,
-            expected: 8,
-            actual: 10,
-        }
-    );
-    assert_eq!(
-        OpticalGainDitherSchedule::new([OpticalGainDitherMode::new(1.0_f32, usize::MAX, 2,)])
-            .unwrap_err(),
-        OpticalGainDitherScheduleError::EstimateWindowOverflow { mode: 0 }
-    );
+    use OpticalGainDitherScheduleError::*;
+    let mode = OpticalGainDitherMode::new;
+    for (modes, expected, diagnostic) in [
+        (vec![], Empty, "schedule must be nonempty"),
+        (
+            vec![mode(0.0_f32, 4, 1)],
+            InvalidAmplitude { mode: 0 },
+            "mode 0 amplitude",
+        ),
+        (
+            vec![mode(1.0, 3, 1)],
+            PeriodTooShort { mode: 0, frames: 3 },
+            "3 frames per period, expected at least 4",
+        ),
+        (
+            vec![mode(1.0, 4, 0)],
+            ZeroPeriodsPerEstimate { mode: 0 },
+            "mode 0 must complete at least one period",
+        ),
+        (
+            vec![mode(1.0, 4, 2), mode(1.0, 5, 2)],
+            EstimateWindowMismatch {
+                mode: 1,
+                expected: 8,
+                actual: 10,
+            },
+            "mode 1 estimate window 10 does not match 8",
+        ),
+        (
+            vec![mode(1.0, usize::MAX, 2)],
+            EstimateWindowOverflow { mode: 0 },
+            "estimate-window extent overflows",
+        ),
+        (
+            vec![mode(1.0, usize::MAX, 1); 2],
+            QuadratureTableOverflow,
+            "quadrature-table extent overflows",
+        ),
+    ] {
+        let error = OpticalGainDitherSchedule::new(modes).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(diagnostic), "{error}");
+    }
 }
 
 #[test]
@@ -184,4 +194,34 @@ fn declaration_publishes_window_state_and_reset_restarts_phase_zero() {
     assert_eq!(window_frame, [0]);
     assert_eq!(phase_indices, [0]);
     assert_eq!(complete, [false]);
+}
+
+#[test]
+fn reusing_a_dither_workspace_checks_mode_count_and_phase_without_writing() {
+    let mode = |period| OpticalGainDitherMode::new(2.0_f32, period, 1);
+    let long = OpticalGainDitherPlan::new(OpticalGainDitherSchedule::new([mode(8)]).unwrap());
+    let short = OpticalGainDitherPlan::new(OpticalGainDitherSchedule::new([mode(4)]).unwrap());
+    let pair = OpticalGainDitherPlan::new(OpticalGainDitherSchedule::new([mode(4); 2]).unwrap());
+    let mut workspace = long.workspace();
+    let mut output = [0.0];
+    for _ in 0..4 {
+        long.process(&mut output, &mut workspace, ()).unwrap();
+    }
+
+    output = [43.0];
+    let error = short.process(&mut output, &mut workspace, ()).unwrap_err();
+    assert_eq!(error, OpticalGainDitherError::WorkspaceState);
+    assert!(error.to_string().contains("workspace phase"));
+    assert_eq!(output, [43.0]);
+    assert_eq!(workspace.frame_count(), 4);
+
+    let mut wrong = [43.0; 2];
+    let error = pair.process(&mut wrong, &mut workspace, ()).unwrap_err();
+    assert_eq!(error, OpticalGainDitherError::WorkspaceExtent);
+    assert!(error.to_string().contains("workspace extent"));
+    assert_eq!(wrong, [43.0; 2]);
+
+    workspace.reset();
+    short.process(&mut output, &mut workspace, ()).unwrap();
+    assert_eq!(output, [2.0]);
 }

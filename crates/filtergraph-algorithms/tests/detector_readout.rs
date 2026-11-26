@@ -476,3 +476,55 @@ fn invalid_block_metadata_abandons_partial_frames_and_recovery_is_marked_once() 
     }
     assert_eq!(output, [1; 64]);
 }
+
+#[test]
+fn geometry_diagnostics_distinguish_missing_pixels_from_invalid_coordinate_steps() {
+    use DetectorReadoutError::*;
+    let normal = DetectorReadoutRegion::new((0, 0), (1, 0), (0, 1));
+    for (size, lines, block, samples, region, expected, detail) in [
+        ((0, 2), 1, 1, 2, normal, EmptyExtent, "positive"),
+        (
+            (usize::MAX, 2),
+            2,
+            1,
+            2,
+            normal,
+            ExtentOverflow,
+            "extent overflow",
+        ),
+        (
+            (2, 2),
+            2,
+            1,
+            1,
+            normal,
+            ImageExtent {
+                readout: 2,
+                detector: 4,
+            },
+            "pixel extent 2 does not match detector extent 4",
+        ),
+        (
+            (2, 2),
+            2,
+            2,
+            2,
+            DetectorReadoutRegion::new((0, 0), (1, 0), (0, -1)),
+            CoordinateRange { region: 0 },
+            "region 0 exceeds",
+        ),
+        (
+            (2, 2),
+            2,
+            1,
+            2,
+            DetectorReadoutRegion::new((0, 0), (0, 1), (0, 1)),
+            DuplicateCoordinate { row: 0, column: 1 },
+            "(0, 1) is mapped more than once",
+        ),
+    ] {
+        let error = DetectorReadoutPlan::new(size, lines, block, samples, [region]).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
+}

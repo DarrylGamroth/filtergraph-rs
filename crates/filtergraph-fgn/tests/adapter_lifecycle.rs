@@ -39,7 +39,11 @@ struct Instance {
 
 impl Instance {
     fn new<I: PluginInstance>(configuration: &CStr) -> Result<Self, i32> {
-        let descriptor = Box::new(descriptor::<I>());
+        Self::from_descriptor(descriptor::<I>(), configuration)
+    }
+
+    fn from_descriptor(descriptor: abi::Descriptor, configuration: &CStr) -> Result<Self, i32> {
+        let descriptor = Box::new(descriptor);
         let executor = Box::new(executor());
         let mut data = null_mut();
         // Both immutable tables remain at stable addresses through cleanup.
@@ -120,6 +124,15 @@ impl Drop for Instance {
 
 fn with_buffer(
     values: &mut [f32],
+    format: &abi::Format,
+    header_sequence: Option<u64>,
+    callback: impl FnOnce(abi::Buffer),
+) -> (u32, u64) {
+    with_typed_buffer(values, format, header_sequence, callback)
+}
+
+fn with_typed_buffer<T>(
+    values: &mut [T],
     format: &abi::Format,
     header_sequence: Option<u64>,
     callback: impl FnOnce(abi::Buffer),
@@ -690,4 +703,310 @@ fn descriptor_rejects_incompatible_hosts_without_returning_an_instance() {
         -abi::EINVAL
     );
     assert!(data.is_null());
+}
+
+macro_rules! numeric_loopback {
+    ($name:ident, $config:ident, $element:ty, $tag:ident, $schema:literal, $samples:expr) => {
+        #[test]
+        fn $name() {
+            use core::convert::Infallible;
+            use filtergraph_algorithms::NoWorkspace;
+            use filtergraph_fgn::{AlgorithmInstance, descriptor_with};
+
+            filtergraph_algorithms::filtergraph_algorithm! {
+                Loopback {
+                    label = "numeric-loopback";
+                    configuration $config {
+                        extent: usize = GraphRebuild;
+                    }
+                    plan = usize;
+                    workspace = NoWorkspace;
+                    properties = none;
+                    dimensions |plan, _workspace| { extent = *plan; }
+                    inputs {
+                        input: $element [extent] = "in", schema = $schema;
+                    }
+                    outputs {
+                        output: $element [extent] = "out", schema = $schema, metadata_from = "in";
+                    }
+                    prepare |config| { Ok((config.extent, NoWorkspace)) }
+                    prepare_error = Infallible;
+                    process |_plan, _workspace| {
+                        output.copy_from_slice(input);
+                        Ok(())
+                    }
+                    process_error = Infallible;
+                }
+            }
+
+            static PORTS: [abi::PortInfo; 2] = [
+                abi::PortInfo::new(0, abi::DIRECTION_INPUT, 0, c"in".as_ptr()),
+                abi::PortInfo::new(1, abi::DIRECTION_OUTPUT, 0, c"out".as_ptr()),
+            ];
+            let instance = Instance::from_descriptor(
+                descriptor_with::<AlgorithmInstance<Loopback>>(
+                    c"numeric-loopback".as_ptr(),
+                    2,
+                    PORTS.as_ptr(),
+                ),
+                c"{\"extent\":2}",
+            )
+            .unwrap();
+            let input_format = instance.format(0).unwrap();
+            let output_format = instance.format(1).unwrap();
+            assert_eq!(input_format.element_type, abi::$tag);
+            assert_eq!(output_format.element_type, input_format.element_type);
+            let mut samples: [$element; 2] = $samples;
+            let mut result = [0 as $element; 2];
+            let (size, sequence) =
+                with_typed_buffer(&mut result, output_format, Some(0), |output| {
+                    with_typed_buffer(&mut samples, input_format, Some(23), |input| {
+                        assert_eq!(unsafe { instance.process(&[input], &mut [output]) }, 0);
+                    });
+                });
+            assert_eq!((size as usize, sequence), (size_of_val(&samples), 23));
+            assert_eq!(result, samples);
+        }
+    };
+}
+
+numeric_loopback!(
+    preserves_i8_extremes,
+    I8Config,
+    i8,
+    ELEMENT_I8,
+    "test/i8/1",
+    [i8::MIN, i8::MAX]
+);
+numeric_loopback!(
+    preserves_i16_extremes,
+    I16Config,
+    i16,
+    ELEMENT_I16_LE,
+    "test/i16/1",
+    [i16::MIN, i16::MAX]
+);
+numeric_loopback!(
+    preserves_i32_extremes,
+    I32Config,
+    i32,
+    ELEMENT_I32_LE,
+    "test/i32/1",
+    [i32::MIN, i32::MAX]
+);
+numeric_loopback!(
+    preserves_i64_extremes,
+    I64Config,
+    i64,
+    ELEMENT_I64_LE,
+    "test/i64/1",
+    [i64::MIN, i64::MAX]
+);
+numeric_loopback!(
+    preserves_f64_precision,
+    F64Config,
+    f64,
+    ELEMENT_F64_LE,
+    "test/f64/1",
+    [1.0 + f64::EPSILON, f64::MIN_POSITIVE]
+);
+
+#[test]
+fn host_rejects_malformed_frames_without_advancing_workspace_history() {
+    let instance = Instance::new::<FixedGain>(c"2").unwrap();
+    let input_format = instance.format(0).unwrap();
+    let output_format = instance.format(1).unwrap();
+    let process = instance.descriptor.process.unwrap();
+    let wrong_type =
+        NdarrayFormat::packed::<i32>(Box::new([2]), abi::LAYOUT_ROW_MAJOR, Some(DATA_SCHEMA))
+            .unwrap();
+    let mut result = [71.0_f32; 2];
+    let mut samples = [3.0_f32, -2.0];
+    with_buffer(&mut result, output_format, None, |mut output| {
+        with_buffer(&mut samples, input_format, None, |input| unsafe {
+            assert_eq!(process(null_mut(), &input, 1, &mut output, 1), -abi::EINVAL);
+            assert_eq!(
+                process(instance.data, null(), 1, &mut output, 1),
+                -abi::EINVAL
+            );
+            assert_eq!(
+                process(instance.data, &input, 1, null_mut(), 1),
+                -abi::EINVAL
+            );
+            assert_eq!(
+                process(instance.data, &input, 0, &mut output, 1),
+                -abi::EINVAL
+            );
+            assert_eq!(
+                process(instance.data, &input, 1, &mut output, 0),
+                -abi::EINVAL
+            );
+            // The host ABI rejects intersecting input and output descriptors.
+            let mut shared = input;
+            let shared = &raw mut shared;
+            assert_eq!(process(instance.data, shared, 1, shared, 1), -abi::EINVAL);
+            assert_eq!(instance.process(&[input], &mut [input]), -abi::EINVAL);
+            assert_eq!(
+                instance.process(&[DISCONNECTED], &mut [output]),
+                -abi::EINVAL
+            );
+            assert_eq!(
+                instance.process(&[input], &mut [DISCONNECTED]),
+                -abi::EINVAL
+            );
+
+            let bad_formats = [null(), wrong_type.as_abi()];
+            for format in bad_formats {
+                let bad = abi::Buffer { format, ..input };
+                assert_eq!(instance.process(&[bad], &mut [output]), -abi::EINVAL);
+                assert_eq!((*(*(*output.buffer).datas).chunk).size, 0);
+            }
+
+            let data = (*input.buffer).datas;
+            let chunk = (*data).chunk;
+            (*input.buffer).n_datas = 0;
+            assert_eq!(instance.process(&[input], &mut [output]), -abi::ENOBUFS);
+            (*input.buffer).n_datas = 1;
+            (*chunk).offset = 12;
+            assert_eq!(instance.process(&[input], &mut [output]), -abi::EMSGSIZE);
+            (*chunk).offset = 0;
+            (*chunk).size = 4;
+            assert_eq!(instance.process(&[input], &mut [output]), -abi::EMSGSIZE);
+            (*chunk).size = 8;
+            assert_eq!(instance.process(&[input], &mut [output]), 0);
+        });
+    });
+    assert_eq!(result, [6.0, -4.0]);
+}
+
+#[test]
+fn host_checks_port_and_metadata_callback_destinations() {
+    let instance = Instance::new::<FixedGain>(c"2").unwrap();
+    let d = &instance.descriptor;
+    let mut f = null();
+    let mut records = null();
+    let mut count = 99;
+    let mut value = abi::Value::NONE;
+    let mut prop = core::mem::MaybeUninit::uninit();
+    let mut token = null_mut();
+    unsafe {
+        assert_eq!(
+            (d.get_port_format.unwrap())(null_mut(), 0, &mut f),
+            -abi::EINVAL
+        );
+        assert_eq!(
+            (d.get_port_format.unwrap())(instance.data, 0, null_mut()),
+            -abi::EINVAL
+        );
+        assert_eq!(
+            (d.enum_prop_info.unwrap())(null_mut(), 0, prop.as_mut_ptr()),
+            -abi::EINVAL
+        );
+        assert_eq!(
+            (d.enum_prop_info.unwrap())(instance.data, 0, null_mut()),
+            -abi::EINVAL
+        );
+        assert_eq!(
+            (d.get_prop.unwrap())(null_mut(), 0, &mut value),
+            -abi::EINVAL
+        );
+        assert_eq!(
+            (d.get_prop.unwrap())(instance.data, 0, null_mut()),
+            -abi::EINVAL
+        );
+        assert_eq!((d.get_prop_revision.unwrap())(null_mut()), 0);
+        assert_eq!(
+            (d.prepare_props.unwrap())(null_mut(), null(), 0, &mut token),
+            -abi::EINVAL
+        );
+        assert_eq!(
+            (d.prepare_parameter.unwrap())(null_mut(), 0, &DISCONNECTED, &mut token),
+            -abi::EINVAL
+        );
+        assert_eq!(
+            (d.prepare_parameter.unwrap())(instance.data, 0, null(), &mut token),
+            -abi::EINVAL
+        );
+        assert_eq!(
+            (d.prepare_parameter.unwrap())(instance.data, 0, &DISCONNECTED, null_mut()),
+            -abi::EINVAL
+        );
+        let metas = d.get_port_metadata.unwrap();
+        assert_eq!(metas(null_mut(), 0, &mut records, &mut count), -abi::EINVAL);
+        assert_eq!(
+            metas(instance.data, 0, null_mut(), &mut count),
+            -abi::EINVAL
+        );
+        assert_eq!(
+            metas(instance.data, 0, &mut records, null_mut()),
+            -abi::EINVAL
+        );
+        assert_eq!(
+            metas(instance.data, 7, &mut records, &mut count),
+            -abi::EINVAL
+        );
+        assert_eq!(count, 99);
+        assert_eq!(metas(instance.data, 0, &mut records, &mut count), 0);
+        assert_eq!(count, 0);
+    }
+    assert!(records.is_null() && f.is_null() && token.is_null());
+}
+
+mod plugin_registry {
+    use super::*;
+
+    filtergraph_fgn::export_plugin!(c"test-adapters", [FixedGain, TunableGain, TunableRamp]);
+
+    #[test]
+    fn exported_registry_resolves_exact_labels_for_the_supported_abi() {
+        assert!(spa_filter_graph_ndarray_plugin_get_interface(abi::ABI_VERSION - 1).is_null());
+        let raw = spa_filter_graph_ndarray_plugin_get_interface(abi::ABI_VERSION);
+        assert!(!raw.is_null());
+        unsafe {
+            let plugin = &*raw;
+            assert_eq!(CStr::from_ptr(plugin.name), c"test-adapters");
+            let find = plugin.find_descriptor.unwrap();
+            for (index, name) in [c"fixed-gain", c"tunable-gain", c"tunable-ramp"]
+                .into_iter()
+                .enumerate()
+            {
+                assert_eq!(
+                    find(name.as_ptr()),
+                    &raw const filtergraph_fgn_registered_descriptors()[index]
+                );
+            }
+            assert!(find(c"Fixed-gain".as_ptr()).is_null());
+            assert!(find(null()).is_null());
+        }
+    }
+}
+
+mod duplicate_registry {
+    use super::*;
+
+    // Avoid defining another exported C symbol in the same test executable.
+    #[test]
+    fn duplicate_empty_and_overlong_plugin_names_fail_admission() {
+        let valid = descriptor::<FixedGain>();
+        let duplicate = [descriptor::<FixedGain>(), descriptor::<FixedGain>()];
+        let name = std::ffi::CString::new("a".repeat(abi::LOCAL_NAME_MAX + 1)).unwrap();
+        let long = abi::Descriptor {
+            name: name.as_ptr(),
+            ..descriptor::<FixedGain>()
+        };
+        let empty = abi::Descriptor {
+            name: c"".as_ptr(),
+            ..descriptor::<FixedGain>()
+        };
+        unsafe {
+            assert!(filtergraph_fgn::plugin_registry_is_valid(c"one", &[valid]));
+            assert!(!filtergraph_fgn::plugin_registry_is_valid(
+                c"",
+                &duplicate[..1]
+            ));
+            assert!(!filtergraph_fgn::registry_is_valid(&duplicate));
+            assert!(!filtergraph_fgn::registry_is_valid(&[long]));
+            assert!(!filtergraph_fgn::registry_is_valid(&[empty]));
+        }
+    }
 }

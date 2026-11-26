@@ -556,3 +556,129 @@ fn row_calibration_consumes_pending_discontinuity_after_plan_adoption() {
 fn row_calibration_consumes_pending_discontinuity_after_reset() {
     check_row_pending_discontinuity(true);
 }
+
+#[test]
+fn invalid_independent_windows_report_extent_and_preserve_output() {
+    let plan = PixelCalibrationPlan::<f32, u16>::new(vec![1.0; 6], vec![0.0; 6]).unwrap();
+    let mut output = [19.0; 3];
+    for (range, nraw, nout, expected, diagnostic) in [
+        (
+            core::ops::Range { start: 4, end: 3 },
+            0,
+            0,
+            ProcessError::EmptyRange,
+            "nonempty",
+        ),
+        (
+            5..7,
+            2,
+            2,
+            ProcessError::RangeOutOfBounds { end: 7, extent: 6 },
+            "7",
+        ),
+        (
+            3..6,
+            2,
+            3,
+            ProcessError::InputExtent {
+                expected: 3,
+                actual: 2,
+            },
+            "input extent",
+        ),
+        (
+            3..6,
+            3,
+            2,
+            ProcessError::OutputExtent {
+                expected: 3,
+                actual: 2,
+            },
+            "output extent",
+        ),
+    ] {
+        let error = plan
+            .process_window(&mut output[..nout], &[2; 3][..nraw], range)
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(diagnostic), "{error}");
+        assert_eq!(output, [19.0; 3]);
+    }
+}
+
+#[test]
+fn row_calibration_reports_invalid_geometry_and_metadata() {
+    use PixelCalibrationRowU16F32PreparationError as Prep;
+    use PixelCalibrationRowU16F32ProcessError as Run;
+    use core::error::Error;
+    use filtergraph_algorithms::{DeclarationProcessError, NativeProcessError};
+
+    let cfg = |image_size, row_block_rows, flat| PixelCalibrationRowU16F32Configuration {
+        row_block_rows,
+        initial_flat: flat,
+        initial_background: None,
+        image_size,
+    };
+    for (config, expected, diagnostic) in [
+        (
+            cfg((usize::MAX - 1, 3), 2, None),
+            Prep::ImageExtentOverflow,
+            "image extent overflow",
+        ),
+        (cfg((4, 3), 4, None), Prep::RowBlockRows, "row-block height"),
+        (
+            cfg((4, 3), 2, Some(vec![1.0; 11])),
+            Prep::Calibration(PixelCalibrationError::ExtentMismatch {
+                flat: 11,
+                background: 12,
+            }),
+            "flat extent 11",
+        ),
+    ] {
+        let error = PixelCalibrationRowU16F32::prepare(config).err().unwrap();
+        assert_eq!(error, DeclarationPreparationError::Algorithm(expected));
+        assert!(error.to_string().contains(diagnostic), "{error}");
+        assert_eq!(
+            expected.source().is_some(),
+            matches!(expected, Prep::Calibration(_))
+        );
+    }
+
+    let mut prepared = PixelCalibrationRowU16F32::prepare(cfg((4, 3), 2, None)).unwrap();
+    let mut output = [19.0; 6];
+    for (sample, expected, detail) in [
+        (None, Run::MissingSampleMetadata, "requires sample metadata"),
+        (
+            Some(SampleMetadata::new(7, 1)),
+            Run::MisalignedOffset {
+                first_row: 1,
+                block_rows: 2,
+            },
+            "first row 1 is not aligned",
+        ),
+        (
+            Some(SampleMetadata::new(7, 4).with_terminal(true)),
+            Run::RowRange,
+            "exceeds the detector height",
+        ),
+        (
+            Some(SampleMetadata::new(7, 2)),
+            Run::Terminal,
+            "terminal marker",
+        ),
+    ] {
+        let error = PixelCalibrationRowU16F32::process_with_metadata(
+            &mut prepared,
+            &[sample],
+            &[2; 6],
+            &mut output,
+        )
+        .unwrap_err();
+        assert_eq!(
+            error,
+            NativeProcessError::Process(DeclarationProcessError::Algorithm(expected))
+        );
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(output, [19.0; 6]);
+    }
+}

@@ -88,3 +88,87 @@ fn a_request_equal_to_a_bound_keeps_its_zero_sign() {
     check!(f32);
     check!(f64);
 }
+
+#[test]
+fn physical_actuator_preparation_reports_initial_state_and_selected_limit_failures() {
+    use filtergraph_algorithms::{
+        InterActuatorStrokeLimit, InterActuatorStrokeLimitPlan, PdmCommandPlanError as Prep,
+        PdmCommandPowerLimitPlan, PdmCommandWorkspaceError as State,
+    };
+
+    let plan = PdmCommandPlan::new(Arc::from([-1.0_f32; 2]), Arc::from([1.0; 2]), None).unwrap();
+    for (candidate, expected, detail) in [
+        (
+            plan.clone()
+                .with_command_power_limit(PdmCommandPowerLimitPlan::new(1, 1.0).unwrap()),
+            Prep::CommandPowerLimitExtent,
+            "command-power limit extent",
+        ),
+        (
+            plan.clone().with_inter_actuator_stroke_limit(
+                InterActuatorStrokeLimitPlan::new(
+                    3,
+                    Arc::from([InterActuatorStrokeLimit::new(0, 1, 0.25)]),
+                )
+                .unwrap(),
+            ),
+            Prep::InterActuatorStrokeLimitExtent,
+            "inter-actuator stroke-limit extent",
+        ),
+    ] {
+        let error = candidate.unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
+    let power = plan
+        .clone()
+        .with_command_power_limit(PdmCommandPowerLimitPlan::new(2, 0.25).unwrap())
+        .unwrap();
+    let stroke = plan
+        .clone()
+        .with_inter_actuator_stroke_limit(
+            InterActuatorStrokeLimitPlan::new(
+                2,
+                Arc::from([InterActuatorStrokeLimit::new(0, 1, 0.25)]),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    for (plan, initial, expected, detail) in [
+        (
+            &plan,
+            &[0.0][..],
+            State::InitialCurrentExtent,
+            "command extent",
+        ),
+        (
+            &plan,
+            &[f32::NAN, 0.0][..],
+            State::NonFiniteInitialCurrent,
+            "command must be finite",
+        ),
+        (
+            &plan,
+            &[0.0, 2.0][..],
+            State::InitialCurrentOutsideRange,
+            "violates actuator limits",
+        ),
+        (
+            &power,
+            &[1.0, 1.0][..],
+            State::InitialCurrentExceedsCommandPower,
+            "exceeds the command-power limit",
+        ),
+        (
+            &stroke,
+            &[0.5, 0.0][..],
+            State::InitialCurrentExceedsInterActuatorStroke,
+            "exceeds an inter-actuator stroke limit",
+        ),
+    ] {
+        let error = plan.workspace(initial).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(plan.workspace(&[0.0, 0.0]).unwrap().current(), [0.0; 2]);
+    }
+}

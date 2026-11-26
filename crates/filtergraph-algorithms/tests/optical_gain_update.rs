@@ -4,7 +4,6 @@ use filtergraph_algorithms::{
     AlgorithmDeclaration, AlgorithmPlan, OpticalGainAssignment, OpticalGainUpdateCriteria,
     OpticalGainUpdateError, OpticalGainUpdateF32, OpticalGainUpdateF32Configuration,
     OpticalGainUpdateInput, OpticalGainUpdateOutput, OpticalGainUpdatePlan,
-    OpticalGainUpdatePlanError, OpticalGainUpdateWorkspaceError,
 };
 
 fn criteria<T>(minimum_gain: T, maximum_gain: T) -> OpticalGainUpdateCriteria<T>
@@ -46,89 +45,72 @@ impl<T: Clone> OutputStorage<T> {
 
 #[test]
 fn preparation_validates_criteria_and_assignments() {
-    let assignment = OpticalGainAssignment::DitherMode {
-        dither_mode: 0,
-        update_fraction: 1.0_f32,
+    use filtergraph_algorithms::OpticalGainUpdatePlanError::*;
+    let assign = |dither_mode, update_fraction| OpticalGainAssignment::DitherMode {
+        dither_mode,
+        update_fraction,
     };
-    assert_eq!(
-        OpticalGainUpdatePlan::new([], [assignment]).unwrap_err(),
-        OpticalGainUpdatePlanError::EmptyCriteria
-    );
-    assert_eq!(
-        OpticalGainUpdatePlan::<f32>::new([criteria(0.1, 2.0)], []).unwrap_err(),
-        OpticalGainUpdatePlanError::EmptyAssignments
-    );
-    assert_eq!(
-        OpticalGainUpdatePlan::new(
-            [OpticalGainUpdateCriteria::new(-0.1_f32, 0.0, 0.1, 2.0, 0.1)],
-            [assignment],
-        )
-        .unwrap_err(),
-        OpticalGainUpdatePlanError::InvalidAmplitudeThreshold { dither_mode: 0 }
-    );
-    assert_eq!(
-        OpticalGainUpdatePlan::new(
-            [OpticalGainUpdateCriteria::new(0.0_f32, 0.0, 0.0, 2.0, 0.1)],
-            [assignment],
-        )
-        .unwrap_err(),
-        OpticalGainUpdatePlanError::InvalidOpticalGainBounds { dither_mode: 0 }
-    );
-    assert_eq!(
-        OpticalGainUpdatePlan::new(
-            [OpticalGainUpdateCriteria::new(
-                0.0_f32,
-                0.0,
-                f32::from_bits(1),
-                2.0,
-                0.1,
-            )],
-            [assignment],
-        )
-        .unwrap_err(),
-        OpticalGainUpdatePlanError::InvalidOpticalGainBounds { dither_mode: 0 }
-    );
-    assert_eq!(
-        OpticalGainUpdatePlan::new(
-            [OpticalGainUpdateCriteria::new(
-                0.0_f32,
-                0.0,
-                0.1,
-                2.0,
-                core::f32::consts::PI + 0.1,
-            )],
-            [assignment],
-        )
-        .unwrap_err(),
-        OpticalGainUpdatePlanError::InvalidMaximumAbsolutePhaseLag { dither_mode: 0 }
-    );
-    assert_eq!(
-        OpticalGainUpdatePlan::new(
-            [criteria(0.1_f32, 2.0)],
-            [OpticalGainAssignment::DitherMode {
+    let good = criteria(0.1_f32, 2.0);
+    let c = OpticalGainUpdateCriteria::new;
+    for (criteria, assignments, expected, detail) in [
+        (
+            vec![],
+            vec![assign(0, 1.0)],
+            EmptyCriteria,
+            "criteria must be nonempty",
+        ),
+        (
+            vec![good],
+            vec![],
+            EmptyAssignments,
+            "assignments must be nonempty",
+        ),
+        (
+            vec![good, c(-0.1, 0.0, 0.1, 2.0, 0.1)],
+            vec![assign(1, 1.0)],
+            InvalidAmplitudeThreshold { dither_mode: 1 },
+            "amplitude threshold for dither mode 1",
+        ),
+        (
+            vec![c(0.0, 0.0, 0.0, 2.0, 0.1)],
+            vec![assign(0, 1.0)],
+            InvalidOpticalGainBounds { dither_mode: 0 },
+            "bounds for dither mode 0",
+        ),
+        (
+            vec![c(0.0, 0.0, f32::from_bits(1), 2.0, 0.1)],
+            vec![assign(0, 1.0)],
+            InvalidOpticalGainBounds { dither_mode: 0 },
+            "bounds for dither mode 0",
+        ),
+        (
+            vec![c(0.0, 0.0, 0.1, 2.0, core::f32::consts::PI + 0.1)],
+            vec![assign(0, 1.0)],
+            InvalidMaximumAbsolutePhaseLag { dither_mode: 0 },
+            "phase lag for dither mode 0",
+        ),
+        (
+            vec![good],
+            vec![assign(1, 1.0)],
+            AssignmentDitherModeOutOfBounds {
+                reconstructed_mode: 0,
                 dither_mode: 1,
-                update_fraction: 1.0,
-            }],
-        )
-        .unwrap_err(),
-        OpticalGainUpdatePlanError::AssignmentDitherModeOutOfBounds {
-            reconstructed_mode: 0,
-            dither_mode: 1,
-        }
-    );
-    assert_eq!(
-        OpticalGainUpdatePlan::new(
-            [criteria(0.1_f32, 2.0)],
-            [OpticalGainAssignment::DitherMode {
-                dither_mode: 0,
-                update_fraction: 0.0,
-            }],
-        )
-        .unwrap_err(),
-        OpticalGainUpdatePlanError::InvalidUpdateFraction {
-            reconstructed_mode: 0,
-        }
-    );
+            },
+            "mode 0 names unavailable dither mode 1",
+        ),
+        (
+            vec![good],
+            vec![assign(0, 0.0)],
+            InvalidUpdateFraction {
+                reconstructed_mode: 0,
+            },
+            "update fraction for reconstructed mode 0",
+        ),
+    ] {
+        let error = OpticalGainUpdatePlan::new(criteria, assignments).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
 }
 
 #[test]
@@ -144,26 +126,41 @@ fn initial_physical_gains_are_validated_against_assignments() {
         ],
     )
     .unwrap();
-    assert_eq!(
-        plan.workspace(&[1.0]).unwrap_err(),
-        OpticalGainUpdateWorkspaceError::InitialOpticalGainExtent {
-            expected: 2,
-            actual: 1,
-        }
-    );
-    assert_eq!(
-        plan.workspace(&[f32::NAN, 1.0]).unwrap_err(),
-        OpticalGainUpdateWorkspaceError::InvalidInitialOpticalGain {
-            reconstructed_mode: 0,
-        }
-    );
-    assert_eq!(
-        plan.workspace(&[1.1, 1.0]).unwrap_err(),
-        OpticalGainUpdateWorkspaceError::InitialOpticalGainOutsideBounds {
-            reconstructed_mode: 0,
-            dither_mode: 0,
-        }
-    );
+    use filtergraph_algorithms::OpticalGainUpdateWorkspaceError::*;
+    for (gains, expected, diagnostic) in [
+        (
+            &[1.0][..],
+            InitialOpticalGainExtent {
+                expected: 2,
+                actual: 1,
+            },
+            "extent 1 does not match 2",
+        ),
+        (
+            &[f32::NAN, 1.0][..],
+            InvalidInitialOpticalGain {
+                reconstructed_mode: 0,
+            },
+            "mode 0 must be finite",
+        ),
+        (
+            &[1.1, 1.0][..],
+            InitialOpticalGainOutsideBounds {
+                reconstructed_mode: 0,
+                dither_mode: 0,
+            },
+            "mode 0 is outside dither mode 0 bounds",
+        ),
+    ] {
+        let error = plan.workspace(gains).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(diagnostic), "{error}");
+    }
+    assert_eq!(plan.criteria()[0].minimum_command_amplitude(), 0.1);
+    assert_eq!(plan.criteria()[0].minimum_response_amplitude(), 0.05);
+    assert_eq!(plan.criteria()[0].minimum_optical_gain(), 0.2);
+    assert_eq!(plan.criteria()[0].maximum_optical_gain(), 1.0);
+    assert_eq!(plan.criteria()[0].maximum_absolute_phase_lag(), 0.25);
     assert_eq!(
         plan.workspace(&[1.0, 3.0]).unwrap().optical_gains(),
         &[1.0, 3.0]

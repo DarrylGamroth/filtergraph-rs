@@ -23,87 +23,6 @@ fn one_subaperture_plan(
 }
 
 #[test]
-fn preparation_fixes_shape_and_finite_values() {
-    assert_eq!(
-        ShackHartmannPlan::<f32>::new(
-            vec![],
-            vec![],
-            vec![0.0; 2],
-            vec![0.0],
-            vec![0.0],
-            vec![true],
-        )
-        .unwrap_err(),
-        ShackHartmannError::EmptyCoordinates
-    );
-    assert_eq!(
-        ShackHartmannPlan::new(
-            vec![0.0_f32],
-            vec![0.0, 1.0],
-            vec![0.0; 2],
-            vec![0.0],
-            vec![0.0],
-            vec![true],
-        )
-        .unwrap_err(),
-        ShackHartmannError::CoordinateExtent { x: 1, y: 2 }
-    );
-    assert_eq!(
-        ShackHartmannPlan::new(
-            vec![0.0_f32],
-            vec![0.0],
-            vec![0.0],
-            vec![0.0],
-            vec![0.0],
-            vec![true],
-        )
-        .unwrap_err(),
-        ShackHartmannError::ReferenceSlopeExtent {
-            expected: 2,
-            actual: 1,
-        }
-    );
-    assert_eq!(
-        ShackHartmannPlan::new(
-            vec![0.0_f32],
-            vec![0.0],
-            vec![0.0; 2],
-            vec![-1.0],
-            vec![0.0],
-            vec![true],
-        )
-        .unwrap_err(),
-        ShackHartmannError::InvalidPixelThreshold { subaperture: 0 }
-    );
-    assert_eq!(
-        ShackHartmannPlan::new(
-            vec![0.0_f32],
-            vec![0.0],
-            vec![0.0; 2],
-            vec![0.0],
-            vec![-1.0],
-            vec![true],
-        )
-        .unwrap_err(),
-        ShackHartmannError::InvalidFluxThreshold { subaperture: 0 }
-    );
-}
-
-#[test]
-fn output_view_requires_pair_interleaved_slopes() {
-    let mut slopes = [0.0_f32; 3];
-    let mut flux = [0.0_f32; 1];
-    let mut validity = [false; 1];
-    assert_eq!(
-        ShackHartmannOutput::new(&mut slopes, &mut flux, &mut validity).unwrap_err(),
-        ShackHartmannOutputError::SlopeExtent {
-            expected: 2,
-            actual: 3,
-        }
-    );
-}
-
-#[test]
 fn centroid_uses_detector_coordinates_and_reference() {
     let plan = one_subaperture_plan(4.0, true, [0.25, -0.5]);
     let mut slab = [f32::NAN; 16];
@@ -624,4 +543,159 @@ fn below_threshold_pixels_do_not_raise_overflow() {
     assert_eq!(slopes, [0.5; 8]);
     assert_eq!(validity, [true; 4]);
     assert_eq!(overflow, 0);
+}
+
+#[test]
+fn calibration_errors_identify_the_detector_axis_or_subaperture() {
+    use ShackHartmannError::*;
+    for (x, y, reference, pixel, flux, active, expected, detail) in [
+        (
+            vec![],
+            vec![],
+            vec![0.0; 2],
+            vec![0.0],
+            vec![0.0],
+            vec![true],
+            EmptyCoordinates,
+            "subaperture must contain pixels",
+        ),
+        (
+            vec![0.0],
+            vec![0.0; 2],
+            vec![0.0; 2],
+            vec![0.0],
+            vec![0.0],
+            vec![true],
+            CoordinateExtent { x: 1, y: 2 },
+            "x-coordinate extent 1 does not match y extent 2",
+        ),
+        (
+            vec![0.0],
+            vec![0.0],
+            vec![],
+            vec![],
+            vec![],
+            vec![],
+            EmptySubapertures,
+            "at least one subaperture",
+        ),
+        (
+            vec![0.0],
+            vec![0.0],
+            vec![0.0; 2],
+            vec![0.0],
+            vec![0.0; 2],
+            vec![true],
+            SubapertureExtent {
+                pixel_thresholds: 1,
+                flux_thresholds: 2,
+                active: 1,
+            },
+            "flux-threshold extent 2",
+        ),
+        (
+            vec![0.0],
+            vec![0.0],
+            vec![0.0],
+            vec![0.0],
+            vec![0.0],
+            vec![true],
+            ReferenceSlopeExtent {
+                expected: 2,
+                actual: 1,
+            },
+            "reference-slope extent 1 does not match 2",
+        ),
+        (
+            vec![0.0_f32, f32::NAN],
+            vec![0.0; 2],
+            vec![0.0; 2],
+            vec![0.0],
+            vec![0.0],
+            vec![true],
+            NonFiniteX { pixel: 1 },
+            "x coordinate at pixel 1",
+        ),
+        (
+            vec![0.0; 2],
+            vec![0.0, f32::INFINITY],
+            vec![0.0; 2],
+            vec![0.0],
+            vec![0.0],
+            vec![true],
+            NonFiniteY { pixel: 1 },
+            "y coordinate at pixel 1",
+        ),
+        (
+            vec![0.0],
+            vec![0.0],
+            vec![0.0, f32::NAN],
+            vec![0.0],
+            vec![0.0],
+            vec![true],
+            NonFiniteReference { slope: 1 },
+            "reference slope at index 1",
+        ),
+        (
+            vec![0.0],
+            vec![0.0],
+            vec![0.0; 4],
+            vec![0.0, -1.0],
+            vec![0.0; 2],
+            vec![true; 2],
+            InvalidPixelThreshold { subaperture: 1 },
+            "pixel threshold for subaperture 1",
+        ),
+        (
+            vec![0.0],
+            vec![0.0],
+            vec![0.0; 4],
+            vec![0.0; 2],
+            vec![0.0, -1.0],
+            vec![true; 2],
+            InvalidFluxThreshold { subaperture: 1 },
+            "flux threshold for subaperture 1",
+        ),
+    ] {
+        let error = ShackHartmannPlan::new(x, y, reference, pixel, flux, active).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
+}
+
+#[test]
+fn invalid_output_reports_which_scientific_array_has_the_wrong_extent() {
+    use ShackHartmannOutputError::*;
+    for (slopes, flux, validity, expected, detail) in [
+        (0, 0, 0, Empty, "nonempty"),
+        (
+            2,
+            1,
+            2,
+            SubapertureExtent {
+                flux: 1,
+                validity: 2,
+            },
+            "flux extent 1 does not match validity extent 2",
+        ),
+        (
+            3,
+            1,
+            1,
+            SlopeExtent {
+                expected: 2,
+                actual: 3,
+            },
+            "slope extent 3 does not match 2",
+        ),
+    ] {
+        let error = ShackHartmannOutput::new(
+            &mut [19.0_f32; 3][..slopes],
+            &mut [19.0; 1][..flux],
+            &mut [true; 2][..validity],
+        )
+        .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+    }
 }

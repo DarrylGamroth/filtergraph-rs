@@ -10,26 +10,76 @@ use filtergraph_algorithms::{
 
 #[test]
 fn preparation_validates_coordinates_references_and_thresholds() {
-    assert_eq!(
-        CenterOfGravityPlan::<f32>::new([], [], [0.0; 2], None, 0.0).unwrap_err(),
-        CenterOfGravityPlanError::EmptyCoordinates
-    );
-    assert_eq!(
-        CenterOfGravityPlan::new([0.0_f32], [0.0, 1.0], [0.0; 2], None, 0.0).unwrap_err(),
-        CenterOfGravityPlanError::CoordinateExtent { x: 1, y: 2 }
-    );
-    assert_eq!(
-        CenterOfGravityPlan::new([0.0_f32], [0.0], [f32::NAN, 0.0], None, 0.0).unwrap_err(),
-        CenterOfGravityPlanError::NonFiniteReference { coordinate: 0 }
-    );
-    assert_eq!(
-        CenterOfGravityPlan::new([0.0_f32], [0.0], [0.0; 2], Some(f32::NAN), 0.0).unwrap_err(),
-        CenterOfGravityPlanError::NonFinitePixelThreshold
-    );
-    assert_eq!(
-        CenterOfGravityPlan::new([0.0_f32], [0.0], [0.0; 2], None, -1.0).unwrap_err(),
-        CenterOfGravityPlanError::InvalidFluxThreshold
-    );
+    use CenterOfGravityPlanError::*;
+    for (x, y, reference, pixel, flux, expected, diagnostic) in [
+        (
+            &[][..],
+            &[][..],
+            [0.0; 2],
+            None,
+            0.0,
+            EmptyCoordinates,
+            "region must contain pixels",
+        ),
+        (
+            &[0.0][..],
+            &[0.0, 1.0][..],
+            [0.0; 2],
+            None,
+            0.0,
+            CoordinateExtent { x: 1, y: 2 },
+            "x-coordinate extent 1",
+        ),
+        (
+            &[0.0, f32::NAN][..],
+            &[0.0; 2][..],
+            [0.0; 2],
+            None,
+            0.0,
+            NonFiniteX { pixel: 1 },
+            "x coordinate at selected pixel 1",
+        ),
+        (
+            &[0.0; 2][..],
+            &[0.0, f32::INFINITY][..],
+            [0.0; 2],
+            None,
+            0.0,
+            NonFiniteY { pixel: 1 },
+            "y coordinate at selected pixel 1",
+        ),
+        (
+            &[0.0][..],
+            &[0.0][..],
+            [f32::NAN, 0.0],
+            None,
+            0.0,
+            NonFiniteReference { coordinate: 0 },
+            "reference centroid coordinate 0",
+        ),
+        (
+            &[0.0][..],
+            &[0.0][..],
+            [0.0; 2],
+            Some(f32::NAN),
+            0.0,
+            NonFinitePixelThreshold,
+            "pixel threshold must be finite",
+        ),
+        (
+            &[0.0][..],
+            &[0.0][..],
+            [0.0; 2],
+            None,
+            -1.0,
+            InvalidFluxThreshold,
+            "flux threshold",
+        ),
+    ] {
+        let error = CenterOfGravityPlan::new(x, y, reference, pixel, flux).unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(diagnostic), "{error}");
+    }
 }
 
 #[test]

@@ -355,7 +355,7 @@ fn rejected_input_or_calculation_preserves_diagnostics() {
     let original = InteractionMatrixStabilityDiagnostics::<f32>::default();
     let mut diagnostics = original;
 
-    for (input, expected) in [
+    for (input, expected, diagnostic) in [
         (
             InteractionMatrixStabilityInput::new(&[1.0], &[1.0, 2.0]),
             InteractionMatrixStabilityError::InputExtent {
@@ -363,6 +363,7 @@ fn rejected_input_or_calculation_preserves_diagnostics() {
                 expected: 2,
                 actual: 1,
             },
+            "FirstWindow extent 1 does not match 2",
         ),
         (
             InteractionMatrixStabilityInput::new(&[1.0, 2.0], &[1.0]),
@@ -371,6 +372,7 @@ fn rejected_input_or_calculation_preserves_diagnostics() {
                 expected: 2,
                 actual: 1,
             },
+            "SecondWindow extent 1 does not match 2",
         ),
         (
             InteractionMatrixStabilityInput::new(&[f32::NAN, 1.0], &[1.0, 2.0]),
@@ -378,6 +380,7 @@ fn rejected_input_or_calculation_preserves_diagnostics() {
                 input: InteractionMatrixStabilityInputKind::FirstWindow,
                 index: 0,
             },
+            "FirstWindow coefficient at index 0",
         ),
         (
             InteractionMatrixStabilityInput::new(&[1.0, 2.0], &[1.0, f32::INFINITY]),
@@ -385,16 +388,19 @@ fn rejected_input_or_calculation_preserves_diagnostics() {
                 input: InteractionMatrixStabilityInputKind::SecondWindow,
                 index: 1,
             },
+            "SecondWindow coefficient at index 1",
         ),
         (
             InteractionMatrixStabilityInput::new(&[f32::MAX, 1.0], &[-f32::MAX, 2.0]),
             InteractionMatrixStabilityError::NonFiniteCalculation,
+            "calculation produced a non-finite value",
         ),
     ] {
-        assert_eq!(
-            plan.process(&mut diagnostics, &mut NoWorkspace, input),
-            Err(expected)
-        );
+        let error = plan
+            .process(&mut diagnostics, &mut NoWorkspace, input)
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(diagnostic), "{error}");
         assert_eq!(diagnostics, original);
     }
 }

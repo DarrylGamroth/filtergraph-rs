@@ -6,12 +6,12 @@ use std::sync::Arc;
 
 use filtergraph_algorithms::schemas::{CONTROLLER_RESIDUAL_ERROR_V1, REQUESTED_PDM_COMMAND_V1};
 use filtergraph_algorithms::{
-    AlgorithmDeclaration, AlgorithmOperation, AlgorithmOperationPlan, AlgorithmPlan,
-    LeakyIntegratorF32, LeakyIntegratorF32Configuration, PdmCommandF32, PdmCommandF32Configuration,
-    PdmCommandInput, PdmCommandOutput, PdmCommandPlan, PreparedGemv, RegionPixels, RegionPixelsMut,
-    ScalarOrVector, ShackHartmannImageF32, ShackHartmannImageF32Configuration,
-    ShackHartmannImagePlan, ShackHartmannOutput, ShackHartmannReconstructorF32,
-    ShackHartmannReconstructorF32Configuration,
+    AlgorithmDeclaration, AlgorithmInput, AlgorithmOperation, AlgorithmOperationPlan,
+    AlgorithmPlan, LeakyIntegratorF32, LeakyIntegratorF32Configuration, PdmCommandF32,
+    PdmCommandF32Configuration, PdmCommandInput, PdmCommandOutput, PdmCommandPlan, PreparedGemv,
+    RegionPixels, RegionPixelsMut, ScalarOrVector, ShackHartmannImageF32,
+    ShackHartmannImageF32Configuration, ShackHartmannImagePlan, ShackHartmannOutput,
+    ShackHartmannReconstructorF32, ShackHartmannReconstructorF32Configuration,
 };
 
 const DETECTOR_ROWS: usize = 352;
@@ -372,4 +372,146 @@ fn pdm_declaration_reset_restores_prepared_state_without_heap_activity() {
     );
     PdmCommandF32::process(&mut command, &zero, &mut demanded, &mut feedback).unwrap();
     assert_eq!(demanded, zero);
+}
+
+#[test]
+fn rejected_image_calibration_updates_preserve_port_shape_and_centroids() {
+    use filtergraph_algorithms::{
+        DeclarationParameterError, ShackHartmannImagePreparationError as E,
+    };
+
+    let mut prepared = ShackHartmannImageF32::prepare(ShackHartmannImageF32Configuration {
+        subaperture_count: 1,
+        image_schema: "test/calibrated-pixels/1".into(),
+        initial_subaperture_origins: Some(vec![[0, 0]]),
+        coordinate_scale: 1.0,
+        pixel_threshold: 0.0,
+        flux_threshold: 0.0,
+        reference_slopes: None,
+        active: None,
+        image_size: (2, 4),
+        subaperture_size: (1, 2),
+    })
+    .unwrap();
+
+    let pixels = [1.0, 3.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let mut slopes = [0.0; 2];
+    let mut flux = [0.0];
+    let mut validity = [false];
+    ShackHartmannImageF32::process(
+        &mut prepared,
+        &pixels,
+        &mut slopes,
+        &mut flux,
+        &mut validity,
+    )
+    .unwrap();
+    let before = slopes;
+
+    // Direct preparation catches malformed replacements even for callers using
+    // the transport-independent plan without the declaration's extent check.
+    let plan = prepared.plan();
+    for (result, expected, diagnostic) in [
+        (
+            plan.with_u32_subaperture_origins(&[0]),
+            E::OriginExtent {
+                expected: 2,
+                actual: 1,
+            },
+            "origin extent 1 does not match 2",
+        ),
+        (
+            plan.with_pair_interleaved_coordinates(&[0.0, 1.0]),
+            E::CoordinateExtent {
+                expected: 4,
+                actual: 2,
+            },
+            "coordinate extent 2 does not match 4",
+        ),
+        (
+            plan.with_pair_interleaved_thresholds(&[0.0]),
+            E::ThresholdExtent {
+                expected: 2,
+                actual: 1,
+            },
+            "threshold extent 1 does not match 2",
+        ),
+    ] {
+        let error = result.unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(diagnostic), "{error}");
+    }
+
+    let port = ShackHartmannImageF32::PORTS
+        .iter()
+        .position(|p| p.name() == "subaperture-origins")
+        .unwrap();
+    let error = prepared
+        .replace_parameter(port, AlgorithmInput::from(&[2_u32, 0][..]))
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        matches!(error, DeclarationParameterError::Algorithm(E::Regions(_))),
+        "{error}"
+    );
+    assert!(error.to_string().contains("region 0"));
+    ShackHartmannImageF32::process(
+        &mut prepared,
+        &pixels,
+        &mut slopes,
+        &mut flux,
+        &mut validity,
+    )
+    .unwrap();
+    assert_eq!((slopes, flux, validity), (before, [4.0], [true]));
+}
+
+#[test]
+fn invalid_initial_geometry_and_scale_fail_before_detector_allocation() {
+    use filtergraph_algorithms::{
+        DeclarationPreparationError, ShackHartmannImagePreparationError as E,
+    };
+    for (origins, count, scale, expected, detail) in [
+        (
+            Some(vec![[0, 0]]),
+            2,
+            1.0,
+            E::InitialOriginCount {
+                expected: 2,
+                actual: 1,
+            },
+            "origin count 1 does not match 2",
+        ),
+        (
+            None,
+            5,
+            1.0,
+            E::InitialOriginGrid,
+            "does not fit on the detector",
+        ),
+        (
+            Some(vec![[0, 0]]),
+            1,
+            0.0,
+            E::InvalidCoordinateScale,
+            "scale must be finite and positive",
+        ),
+    ] {
+        let error = ShackHartmannImageF32::prepare(ShackHartmannImageF32Configuration {
+            subaperture_count: count,
+            image_schema: "test/calibrated-pixels/1".into(),
+            initial_subaperture_origins: origins,
+            coordinate_scale: scale,
+            pixel_threshold: 0.0,
+            flux_threshold: 0.0,
+            reference_slopes: None,
+            active: None,
+            image_size: (2, 2),
+            subaperture_size: (1, 1),
+        })
+        .err()
+        .unwrap();
+        assert_eq!(error, DeclarationPreparationError::Algorithm(expected));
+        assert!(error.to_string().contains(detail), "{error}");
+    }
 }
