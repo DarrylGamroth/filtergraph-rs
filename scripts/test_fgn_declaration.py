@@ -13,6 +13,7 @@ import tempfile
 import tomllib
 from pathlib import Path
 
+
 def fgn_host_abi(fgn_root: Path) -> int:
     # ABI 8 alone does not distinguish the retired native 3.x metadata layout.
     version = re.search(r"version\s*:\s*['\"](\d+)\.", (fgn_root / "meson.build").read_text())
@@ -95,6 +96,9 @@ def main() -> None:
         required=True,
     )
     parser.add_argument("--fgn-build", type=Path)
+    parser.add_argument(
+        "--debug", action="store_true", help="exercise the debug bundle for coverage"
+    )
     arguments = parser.parse_args()
 
     verify_production_selection(repository)
@@ -107,15 +111,17 @@ def main() -> None:
     )
     fgn_host_abi(fgn_source)
     build_environment = os.environ.copy()
+    profile = "debug" if arguments.debug else "release"
+    release_flag = [] if arguments.debug else ["--release"]
     bundle_command = [
-        "cargo", "build", "--release", "--locked", "-p", "filtergraph-fgn-bundle"
+        "cargo", "build", *release_flag, "--locked", "-p", "filtergraph-fgn-bundle"
     ]
     run(bundle_command, repository, env=build_environment)
     run(
         [
             "cargo",
             "rustc",
-            "--release",
+            *release_flag,
             "--locked",
             "-p",
             "filtergraph-fgn",
@@ -131,9 +137,9 @@ def main() -> None:
         env=build_environment,
     )
     target = Path(os.environ.get("CARGO_TARGET_DIR", repository / "target")).resolve()
-    library = target / "release/libfiltergraph_fgn_bundle.so"
+    library = target / profile / "libfiltergraph_fgn_bundle.so"
     metadata_library = (
-        target / "release/examples/libfiltergraph_fgn_metadata_fixture.so"
+        target / profile / "examples/libfiltergraph_fgn_metadata_fixture.so"
     )
     for artifact in (library, metadata_library):
         dynamic_symbols = subprocess.run(
@@ -177,25 +183,26 @@ def main() -> None:
         finally:
             os.chdir(previous)
 
-    with tempfile.TemporaryDirectory(prefix="filtergraph-fgn-install-") as directory:
-        run(
-            [
-                "python3",
-                "scripts/install_fgn_bundle.py",
-                "--no-build",
-                "--prefix",
-                "/usr",
-                "--destdir",
-                directory,
-            ],
-            repository,
-        )
-        installed = (
-            Path(directory)
-            / "usr/lib/pipewire-ao/filter-graph/libfiltergraph-fgn.so"
-        )
-        if installed.read_bytes() != library.read_bytes():
-            raise RuntimeError("installed FilterGraph FGN bundle differs from build artifact")
+    if not arguments.debug:
+        with tempfile.TemporaryDirectory(prefix="filtergraph-fgn-install-") as directory:
+            run(
+                [
+                    "python3",
+                    "scripts/install_fgn_bundle.py",
+                    "--no-build",
+                    "--prefix",
+                    "/usr",
+                    "--destdir",
+                    directory,
+                ],
+                repository,
+            )
+            installed = (
+                Path(directory)
+                / "usr/lib/pipewire-ao/filter-graph/libfiltergraph-fgn.so"
+            )
+            if installed.read_bytes() != library.read_bytes():
+                raise RuntimeError("installed FilterGraph FGN bundle differs from build artifact")
 
     run(
         [

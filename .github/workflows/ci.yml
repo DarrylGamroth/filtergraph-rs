@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  coverage:
+    name: Tests and Rust coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_INCREMENTAL: 0
+      PIPEWIREAO_REVISION: 14a64e1db579b2d4e3d257ff7aa10b6a35de3f5f # v4.0.10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gfortran gettext meson ninja-build pkg-config
+
+      - name: Install Rust and coverage tooling
+        run: |
+          rustup toolchain install 1.100.0 --profile minimal --component llvm-tools,rustfmt
+          rustup override set 1.100.0
+          tool="$RUNNER_TEMP/cargo-llvm-cov.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 --output "$tool" \
+            https://github.com/taiki-e/cargo-llvm-cov/releases/download/v0.9.1/cargo-llvm-cov-x86_64-unknown-linux-gnu.tar.gz
+          printf '%s  %s\n' b3f68e625481fed9b16444174f3fa5ebcdbde4a1878803a35eabe2dcefcdc41a "$tool" | sha256sum --strict --check -
+          tar -xzf "$tool" -C "$HOME/.cargo/bin"
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Cache the OpenBLAS build
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ~/.local/share/openblas_build
+          key: openblas-ubuntu-24.04-${{ runner.arch }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml') }}
+
+      - name: Configure the public PipeWireAO graph host
+        run: |
+          source_dir="$RUNNER_TEMP/pipewireao"
+          git init -q "$source_dir"
+          git -C "$source_dir" fetch --no-tags --depth 1 https://github.com/DarrylGamroth/PipeWireAO.git "$PIPEWIREAO_REVISION"
+          git -C "$source_dir" checkout --detach "$PIPEWIREAO_REVISION"
+          meson setup "$source_dir/build" "$source_dir" \
+            -Dauto_features=disabled -Dflatpak=disabled -Dspa-plugins=enabled \
+            -Ddocs=disabled -Dexamples=disabled -Dtests=disabled
+
+      - name: Run Rust and native-host tests with coverage
+        run: |
+          coverage_env=$(cargo llvm-cov show-env --sh --remap-path-prefix)
+          eval "$coverage_env"
+          cargo test --workspace --locked
+          cargo test --locked -p filtergraph-algorithms --no-default-features
+          cargo test --workspace --locked --all-features
+          python3 scripts/test_fgn_declaration.py --debug \
+            --fgn-source "$RUNNER_TEMP/pipewireao" --fgn-build "$RUNNER_TEMP/pipewireao/build"
+          python3 -m unittest discover -s scripts -p 'test_fgn_software_version.py'
+          cargo llvm-cov report --lcov --output-path target/lcov.info \
+            --ignore-filename-regex '(^|/)(tests|examples|benches)/'
+
+      - name: Summarize line coverage
+        run: |
+          awk -F: '
+            $1 == "LF" { found += $2 }
+            $1 == "LH" { hit += $2 }
+            END {
+              if (!found) {
+                print "Empty Rust coverage report"
+                exit 1
+              }
+              printf "Rust line coverage: %.2f%% (%d/%d). Target: >90%%.\n", 100 * hit / found, hit, found
+            }
+          ' target/lcov.info | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Save the coverage report
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: rust-coverage
+          path: target/lcov.info
+          if-no-files-found: error
+
+      - name: Upload coverage to Codecov
+        if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]') }}
+        uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7.1.1
+        with:
+          use_oidc: true
+          disable_file_fixes: true
+          disable_search: true
+          files: target/lcov.info
+          fail_ci_if_error: true
