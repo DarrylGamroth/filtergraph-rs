@@ -368,37 +368,62 @@ fn execution_errors_preserve_the_complete_output() {
     let mut wrong_workspace = other_plan.workspace();
     let mut output = [17.0];
 
-    assert_eq!(
-        plan.process(&mut output, &mut workspace, &[1.0]),
-        Err(StructuredInteractionMatrixError::ResponseExtent {
-            expected: 2,
-            actual: 1
-        })
-    );
-    assert_eq!(output, [17.0]);
-    assert_eq!(
-        plan.process(&mut [], &mut workspace, &[1.0, -1.0]),
-        Err(StructuredInteractionMatrixError::OutputExtent {
-            expected: 1,
-            actual: 0
-        })
-    );
-    assert_eq!(output, [17.0]);
-    assert_eq!(
-        plan.process(&mut output, &mut workspace, &[f64::NAN, 0.0]),
-        Err(StructuredInteractionMatrixError::NonFiniteResponse { index: 0 })
-    );
-    assert_eq!(output, [17.0]);
-    assert_eq!(
-        plan.process(&mut output, &mut wrong_workspace, &[1.0, -1.0]),
-        Err(StructuredInteractionMatrixError::WorkspaceExtent)
-    );
-    assert_eq!(output, [17.0]);
-    assert_eq!(
-        plan.process(&mut output, &mut workspace, &[f64::MAX, -f64::MAX]),
-        Err(StructuredInteractionMatrixError::NonFiniteCalculation)
-    );
-    assert_eq!(output, [17.0]);
+    use StructuredInteractionMatrixError::*;
+    for (responses, nout, wrong_scratch, expected, detail) in [
+        (
+            &[1.0][..],
+            1,
+            false,
+            ResponseExtent {
+                expected: 2,
+                actual: 1,
+            },
+            "response extent 1 does not match 2",
+        ),
+        (
+            &[1.0, -1.0][..],
+            0,
+            false,
+            OutputExtent {
+                expected: 1,
+                actual: 0,
+            },
+            "output extent 0 does not match 1",
+        ),
+        (
+            &[f64::NAN, 0.0][..],
+            1,
+            false,
+            NonFiniteResponse { index: 0 },
+            "row-major index 0",
+        ),
+        (
+            &[1.0, -1.0][..],
+            1,
+            true,
+            WorkspaceExtent,
+            "workspace extent",
+        ),
+        (
+            &[f64::MAX, -f64::MAX][..],
+            1,
+            false,
+            NonFiniteCalculation,
+            "calculation produced a non-finite value",
+        ),
+    ] {
+        let scratch = if wrong_scratch {
+            &mut wrong_workspace
+        } else {
+            &mut workspace
+        };
+        let error = plan
+            .process(&mut output[..nout], scratch, responses)
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(output, [17.0]);
+    }
 
     plan.process(&mut output, &mut workspace, &[3.0, -1.0])
         .unwrap();

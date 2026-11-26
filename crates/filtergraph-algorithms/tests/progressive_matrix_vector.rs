@@ -80,3 +80,45 @@ fn invalid_group_input_is_rejected_before_output_mutation() {
     );
     assert_eq!(output, [7.0]);
 }
+
+#[test]
+fn group_accumulation_checks_extent_and_finite_result() {
+    let canonical = PreparedGemv::new(1, 2, Arc::from([f32::MAX, 0.5])).unwrap();
+    let plan = PreparedProgressiveGemv::new(canonical, &[0, 1], 3).unwrap();
+    let mut output = [7.0];
+    for (nout, input, expected, detail) in [
+        (
+            0,
+            &[0.0, 2.0][..],
+            ProgressiveGemvError::OutputExtent {
+                expected: 1,
+                actual: 0,
+            },
+            "output extent 0",
+        ),
+        (
+            1,
+            &[0.0][..],
+            ProgressiveGemvError::InputExtent {
+                expected: 2,
+                actual: 1,
+            },
+            "input extent 1",
+        ),
+    ] {
+        let error = plan
+            .accumulate_group(&mut output[..nout], input, 0)
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(output, [7.0]);
+    }
+    plan.accumulate_group(&mut output, &[f32::NAN, 2.0], 2)
+        .unwrap();
+    assert_eq!(output, [7.0]);
+    let error = plan
+        .accumulate_group(&mut output, &[2.0, 0.0], 0)
+        .unwrap_err();
+    assert_eq!(error, ProgressiveGemvError::NonFiniteOutput);
+    assert!(error.to_string().contains("non-finite output"), "{error}");
+}

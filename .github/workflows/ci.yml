@@ -82,7 +82,7 @@ jobs:
           grep -qm 1 '\bfma\b' /proc/cpuinfo
           RUSTFLAGS="$RUSTFLAGS -C target-feature=+avx2,+fma" \
             cargo test --locked -p filtergraph-algorithms \
-              --test shack_hartmann --test shack_hartmann_streaming_equivalence \
+              --lib --test shack_hartmann --test shack_hartmann_streaming_equivalence \
               --test chopped_image_difference --test scc_residual_equivalence \
               --test shape_dense_ml_equivalence --test pyramid_i4q_equivalence
           python3 scripts/test_fgn_declaration.py --debug \

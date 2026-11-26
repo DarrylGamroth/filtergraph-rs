@@ -685,3 +685,40 @@ fn nonfinite_closed_loop_solve_preserves_both_outputs() {
     assert_eq!(interaction_matrix, [7.0]);
     assert_eq!(diagnostics, unchanged_diagnostics);
 }
+
+#[test]
+fn nonfinite_correlation_names_the_failed_stage_and_preserves_last_matrix() {
+    use filtergraph_algorithms::DocrimeInteractionMatrixStage;
+    let criteria = DocrimeConditioningCriteria::new(f64::MIN_POSITIVE, 0.99, 0.01).unwrap();
+    let plan = DocrimeOpenLoopInteractionMatrixPlan::new(1, 2, criteria).unwrap();
+    let mut workspace = plan.workspace();
+    let mut matrix = [7.0, 8.0];
+    let mut diagnostic = DocrimeInteractionMatrixDiagnostics::default();
+    let before = diagnostic;
+    let covariance = [f64::MIN_POSITIVE, f64::MAX, f64::MAX, f64::MIN_POSITIVE];
+    let error = plan
+        .process(
+            DocrimeInteractionMatrixOutput::new(&mut matrix, &mut diagnostic),
+            &mut workspace,
+            DocrimeCovariances::new(2, &[1.0, 2.0], &covariance),
+        )
+        .unwrap_err();
+    assert_eq!(
+        error,
+        DocrimeInteractionMatrixError::NonFiniteCalculation {
+            stage: DocrimeInteractionMatrixStage::CorrectorCorrelation,
+        }
+    );
+    assert!(error.to_string().contains("CorrectorCorrelation"));
+    assert_eq!(matrix, [7.0, 8.0]);
+    assert_eq!(diagnostic, before);
+
+    plan.process(
+        DocrimeInteractionMatrixOutput::new(&mut matrix, &mut diagnostic),
+        &mut workspace,
+        DocrimeCovariances::new(2, &[1.0, 2.0], &[1.0, 0.0, 0.0, 1.0]),
+    )
+    .unwrap();
+    assert_eq!(matrix, [1.0, 2.0]);
+    assert!(diagnostic.status().is_valid());
+}

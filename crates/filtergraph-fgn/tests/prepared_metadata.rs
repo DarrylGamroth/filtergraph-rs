@@ -481,3 +481,59 @@ fn prepared_metadata_tables_are_stable_and_instance_specific() {
         );
     }
 }
+
+#[test]
+fn descriptor_rejects_duplicate_reserved_and_oversized_metadata_layouts() {
+    let owned = AlgorithmDescriptor::new::<Chopped>().unwrap();
+    let source = owned.as_abi();
+    for modify in [
+        (|records: &mut Vec<abi::SpaMetaRequirement>| records.push(records[0]))
+            as fn(&mut Vec<abi::SpaMetaRequirement>),
+        |records| records[0].reserved = 1,
+        |records| records[0].flags = 2,
+        |records| {
+            records[0].type_ = abi::META_HEADER;
+            records[0].size = size_of::<abi::SpaMetaHeader>() as u32;
+        },
+        |records| records.resize(abi::MAX_METAS, records[0]),
+        |records| {
+            records.push(abi::SpaMetaRequirement {
+                type_: 0x777,
+                size: abi::MAX_META_BYTES as u32,
+                flags: 0,
+                reserved: 0,
+            })
+        },
+    ] {
+        let invalid = DescriptorCopy::input_layouts(source, modify);
+        assert_eq!(
+            Instance::new(&invalid.descriptor, STRICT).err(),
+            Some(-abi::EINVAL)
+        );
+    }
+    assert!(Instance::new(source, STRICT).is_ok());
+}
+
+#[test]
+fn malformed_frame_layout_is_rejected_before_the_frame_is_used() {
+    let owned = AlgorithmDescriptor::new::<Chopped>().unwrap();
+    let instance = Instance::new(owned.as_abi(), STRICT).unwrap();
+    let mut frames = Frames::new(ALL);
+    frames.image.acquisition(1, 1, 1);
+
+    let count = frames.image.buffer.n_metas;
+    frames.image.buffer.n_metas = abi::MAX_METAS as u32 + 1;
+    assert_eq!(frames.process(&instance), -abi::ENOBUFS);
+    frames.image.buffer.n_metas = count;
+
+    let original = frames.image._metas[1].type_;
+    frames.image._metas[1].type_ = abi::META_HEADER;
+    frames.image._metas[1].size = size_of::<abi::SpaMetaHeader>() as u32;
+    frames.image._metas[1].data = (&raw mut *frames.image.header).cast();
+    assert_eq!(frames.process(&instance), -abi::EINVAL);
+    frames.image._metas[1].type_ = original;
+    // A new packet avoids relying on any partially modified descriptors.
+    frames.image = Packet::new(vec![10.0, 20.0], ALL);
+    frames.image.acquisition(1, 1, 1);
+    assert_eq!(frames.process(&instance), 0);
+}

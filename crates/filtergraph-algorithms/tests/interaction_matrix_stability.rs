@@ -509,3 +509,46 @@ fn declaration_exposes_typed_diagnostics_and_dimensionless_runtime_thresholds() 
         )
     ));
 }
+
+#[test]
+fn portable_stability_configuration_reports_dimension_and_criterion_failures() {
+    use InteractionMatrixStabilityCriteriaError as Criterion;
+    use InteractionMatrixStabilityF32PreparationError::{Criteria, Plan};
+    use InteractionMatrixStabilityPlanError as Dimension;
+    use filtergraph_algorithms::DeclarationPreparationError;
+    for (rows, columns, minimum, expected, detail) in [
+        (
+            0,
+            1,
+            0.1,
+            Plan(Dimension::EmptyDimension),
+            "dimensions must both be nonzero",
+        ),
+        (
+            usize::MAX,
+            2,
+            0.1,
+            Plan(Dimension::ExtentOverflow),
+            "extent overflow",
+        ),
+        (
+            1,
+            1,
+            -0.1,
+            Criteria(Criterion::InvalidMinimumColumnNorm),
+            "column norm must be positive",
+        ),
+    ] {
+        let error =
+            InteractionMatrixStabilityF32::prepare(InteractionMatrixStabilityF32Configuration {
+                measurement_count: rows,
+                corrector_coordinate_count: columns,
+                minimum_column_norm: minimum,
+                interaction_matrix_schema: "test/covariance/1".into(),
+            })
+            .err()
+            .unwrap();
+        assert_eq!(error, DeclarationPreparationError::Algorithm(expected));
+        assert!(error.to_string().contains(detail), "{error}");
+    }
+}

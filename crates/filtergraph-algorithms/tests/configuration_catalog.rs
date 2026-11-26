@@ -160,3 +160,34 @@ fn explicit_none_default_is_distinct_from_no_default() {
     );
     Defaults::prepare(parsed).unwrap();
 }
+
+#[test]
+fn catalog_preserves_scalar_extremes_optional_values_and_field_identity() {
+    use filtergraph_algorithms::{ConfigurationUpdate, ConfigurationValue};
+
+    fn default() -> ConfigurationValue {
+        ConfigurationValue::from((vec![i64::MIN, i64::MAX], Some(u64::MAX)))
+    }
+    let required = AlgorithmConfiguration::new(
+        "limits",
+        "(Vec<i64>, Option<u64>)",
+        ConfigurationUpdate::Construction,
+    );
+    let optional = required.with_default(default);
+    assert_eq!(required, required);
+    assert_eq!(optional, required.with_default(default));
+    assert_ne!(optional, required);
+    assert_ne!(
+        required,
+        AlgorithmConfiguration::new("limits", "Vec<i64>", ConfigurationUpdate::Construction)
+    );
+    assert_eq!(required.rust_type(), "(Vec<i64>, Option<u64>)");
+    assert!(required.required());
+    assert_eq!(
+        optional
+            .default_value()
+            .map(|value| serde_json::to_string(&value).unwrap())
+            .as_deref(),
+        Some("[[-9223372036854775808,9223372036854775807],18446744073709551615]")
+    );
+}

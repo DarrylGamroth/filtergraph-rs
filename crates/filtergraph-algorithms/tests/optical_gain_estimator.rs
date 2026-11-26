@@ -618,3 +618,55 @@ fn estimator_distinguishes_the_malformed_input_and_output_fields() {
         assert!(storage.complete);
     }
 }
+
+#[test]
+fn incompatible_window_length_does_not_consume_the_next_estimator_sample() {
+    use std::sync::Arc;
+    let mode = |period| OpticalGainDitherMode::new(1.0_f32, period, 1);
+    let long_schedule = Arc::new(OpticalGainDitherSchedule::new([mode(8)]).unwrap());
+    let long = OpticalGainEstimatorPlan::new(Arc::clone(&long_schedule), [2.0]).unwrap();
+    let short =
+        OpticalGainEstimatorPlan::new(OpticalGainDitherSchedule::new([mode(4)]).unwrap(), [1.0])
+            .unwrap();
+    let mut workspace = long.workspace();
+    let mut storage = OutputStorage::filled(1, 19.0);
+    assert!(Arc::ptr_eq(&long_schedule, &long.shared_schedule()));
+    assert_eq!(long.two_over_window(), 0.25);
+    assert_eq!(long.calibration_responses(), &[2.0]);
+    for _ in 0..4 {
+        long.process(
+            storage.output(),
+            &mut workspace,
+            OpticalGainEstimatorInput::new(&[1.0], &[2.0]),
+        )
+        .unwrap();
+    }
+    let error = short
+        .process(
+            storage.output(),
+            &mut workspace,
+            OpticalGainEstimatorInput::new(&[1.0], &[2.0]),
+        )
+        .unwrap_err();
+    assert_eq!(error, OpticalGainEstimatorError::WorkspaceState);
+    assert!(error.to_string().contains("workspace frame count"));
+    assert_eq!(workspace.frame_count(), 4);
+    assert_eq!(storage.optical_gains, [19.0]);
+    workspace.reset();
+    for observation in [1.0, 0.0, -1.0, 0.0] {
+        short
+            .process(
+                storage.output(),
+                &mut workspace,
+                OpticalGainEstimatorInput::new(&[observation], &[observation * 0.75]),
+            )
+            .unwrap();
+    }
+    let output = storage.output();
+    assert!(output.is_complete());
+    assert_eq!(output.command_amplitudes(), [1.0]);
+    assert_eq!(output.response_amplitudes(), [0.75]);
+    assert_eq!(output.optical_gains(), [0.75]);
+    assert!(output.phase_lags()[0].abs() < 1.0e-6);
+    assert_eq!(output.valid(), [true]);
+}

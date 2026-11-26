@@ -416,3 +416,60 @@ fn batched_updates_preserve_fma_order_for_a_partition() {
         .unwrap();
     assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
 }
+
+#[test]
+fn rejected_measurement_partitions_do_not_accumulate_a_valid_prefix() {
+    use filtergraph_algorithms::IncrementalDenseReconstructionError as E;
+
+    let plan = plan(3);
+    let mut output = [17.0; 1];
+    for (measurements, columns, batch, first, expected, diagnostic) in [
+        (
+            &[2.0, 3.0][..],
+            &[0][..],
+            0..1,
+            0,
+            E::PartitionRange,
+            "partition",
+        ),
+        (
+            &[2.0][..],
+            &[0][..],
+            0..2,
+            0,
+            E::PartitionRange,
+            "partition",
+        ),
+        (
+            &[2.0][..],
+            &[0][..],
+            0..1,
+            usize::MAX,
+            E::PartitionRange,
+            "partition",
+        ),
+        (
+            &[2.0, 3.0][..],
+            &[0, u32::MAX][..],
+            0..2,
+            0,
+            E::ColumnOutOfRange,
+            "outside the reconstructor",
+        ),
+        (
+            &[2.0, f32::NAN][..],
+            &[0, 1][..],
+            0..2,
+            0,
+            E::NonFiniteInput,
+            "measurement must be finite",
+        ),
+    ] {
+        let error = plan
+            .accumulate_reconstruction_partition(measurements, columns, &mut output, batch, first)
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(diagnostic), "{error}");
+        assert_eq!(output, [17.0]);
+    }
+}

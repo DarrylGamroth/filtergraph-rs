@@ -221,18 +221,26 @@ fn execution_rejects_each_view_extent_before_publication() {
         )
     };
 
+    let error = process(
+        &[],
+        &[1.0],
+        &mut pseudo_open_loop_measurements,
+        &mut residual_error,
+    )
+    .unwrap_err();
     assert_eq!(
-        process(
-            &[],
-            &[1.0],
-            &mut pseudo_open_loop_measurements,
-            &mut residual_error,
-        ),
-        Err(PseudoOpenLoopReconstructionError::InputExtent {
+        error,
+        PseudoOpenLoopReconstructionError::InputExtent {
             input: PseudoOpenLoopInputKind::ResidualMeasurements,
             expected: 1,
             actual: 0,
-        })
+        }
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("ResidualMeasurements input extent 0"),
+        "{error}"
     );
     assert_eq!(
         process(
@@ -247,13 +255,20 @@ fn execution_rejects_each_view_extent_before_publication() {
             actual: 0,
         })
     );
+    let error = process(&[1.0], &[1.0], &mut [], &mut residual_error).unwrap_err();
     assert_eq!(
-        process(&[1.0], &[1.0], &mut [], &mut residual_error),
-        Err(PseudoOpenLoopReconstructionError::OutputExtent {
+        error,
+        PseudoOpenLoopReconstructionError::OutputExtent {
             output: PseudoOpenLoopOutputKind::PseudoOpenLoopMeasurements,
             expected: 1,
             actual: 0,
-        })
+        }
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("PseudoOpenLoopMeasurements output extent 0"),
+        "{error}"
     );
     assert_eq!(
         process(&[1.0], &[1.0], &mut pseudo_open_loop_measurements, &mut [],),
@@ -266,17 +281,18 @@ fn execution_rejects_each_view_extent_before_publication() {
     assert_eq!(pseudo_open_loop_measurements, [7.0]);
     assert_eq!(residual_error, [8.0]);
 
-    assert_eq!(
-        plan.process(
+    let error = plan
+        .process(
             PseudoOpenLoopReconstructionOutput::new(
                 &mut pseudo_open_loop_measurements,
                 &mut residual_error,
             ),
             &mut other_workspace,
             PseudoOpenLoopReconstructionInput::new(&[1.0], &[1.0]),
-        ),
-        Err(PseudoOpenLoopReconstructionError::WorkspaceExtent)
-    );
+        )
+        .unwrap_err();
+    assert_eq!(error, PseudoOpenLoopReconstructionError::WorkspaceExtent);
+    assert!(error.to_string().contains("workspace extent"), "{error}");
     assert_eq!(pseudo_open_loop_measurements, [7.0]);
     assert_eq!(residual_error, [8.0]);
 }
@@ -320,19 +336,25 @@ fn nonfinite_inputs_and_every_nonfinite_stage_preserve_both_outputs() {
         let mut workspace = plan.workspace();
         let mut pseudo_open_loop_measurements = [7.0];
         let mut residual_error = [8.0];
-        assert_eq!(
-            plan.process(
+        let error = plan
+            .process(
                 PseudoOpenLoopReconstructionOutput::new(
                     &mut pseudo_open_loop_measurements,
                     &mut residual_error,
                 ),
                 &mut workspace,
-                PseudoOpenLoopReconstructionInput::new(
-                    &[residual_measurement],
-                    &[corrector_shape],
-                ),
-            ),
-            Err(PseudoOpenLoopReconstructionError::NonFiniteCalculation { stage })
+                PseudoOpenLoopReconstructionInput::new(&[residual_measurement], &[corrector_shape]),
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            PseudoOpenLoopReconstructionError::NonFiniteCalculation { stage }
+        );
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("{stage:?} calculation")),
+            "{error}"
         );
         assert_eq!(pseudo_open_loop_measurements, [7.0]);
         assert_eq!(residual_error, [8.0]);
@@ -350,16 +372,25 @@ fn nonfinite_inputs_and_every_nonfinite_stage_preserve_both_outputs() {
         let mut workspace = plan.workspace();
         let mut pseudo_open_loop_measurements = [7.0];
         let mut residual_error = [8.0];
-        assert_eq!(
-            plan.process(
+        let error = plan
+            .process(
                 PseudoOpenLoopReconstructionOutput::new(
                     &mut pseudo_open_loop_measurements,
                     &mut residual_error,
                 ),
                 &mut workspace,
-                PseudoOpenLoopReconstructionInput::new(&residual_measurements, &corrector_shape,),
-            ),
-            Err(PseudoOpenLoopReconstructionError::NonFiniteInput { input, index: 0 })
+                PseudoOpenLoopReconstructionInput::new(&residual_measurements, &corrector_shape),
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            PseudoOpenLoopReconstructionError::NonFiniteInput { input, index: 0 }
+        );
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("{input:?} input at index 0")),
+            "{error}"
         );
         assert_eq!(pseudo_open_loop_measurements, [7.0]);
         assert_eq!(residual_error, [8.0]);

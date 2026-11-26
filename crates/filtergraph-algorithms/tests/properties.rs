@@ -827,3 +827,44 @@ fn numeric_property_ranges_preserve_storage_types_and_include_endpoints() {
         );
     }
 }
+
+#[test]
+fn binding_errors_retain_the_schema_or_plan_cause_for_the_caller() {
+    use core::error::Error;
+    let mut binding = PropertyBinding::new(CoupledPlan { lower: 0, upper: 1 });
+    let invalid = [PropertyAssignment {
+        id: 10,
+        value: PropertyValue::Int(2),
+    }];
+    let error = binding.prepare_properties(&invalid).unwrap_err();
+    let PropertyBindingError::Property(error) = error else {
+        panic!("{error}")
+    };
+    assert_eq!(error, PropertyError::InvalidPlan(CoupledPlanError));
+    assert_eq!(error.to_string(), "lower must not exceed upper");
+    assert!(error.source().unwrap().is::<CoupledPlanError>());
+    assert_eq!(binding.requested_generation(), 0);
+
+    let valid = [PropertyAssignment {
+        id: 11,
+        value: PropertyValue::Int(3),
+    }];
+    binding.prepare_properties(&valid).unwrap();
+    let error = binding.prepare_properties(&valid).unwrap_err();
+    assert_eq!(error, PropertyBindingError::Busy);
+    assert!(error.to_string().contains("update is already pending"));
+    binding.discard_properties();
+
+    let plan = DuplicateIdPlan {
+        first: 0,
+        second: 0,
+    };
+    let error = plan
+        .prepare_properties(&[PropertyAssignment {
+            id: 5,
+            value: PropertyValue::Int(1),
+        }])
+        .unwrap_err();
+    assert!(error.to_string().contains("descriptors 0 and 1 use id 5"));
+    assert!(error.source().unwrap().is::<PropertySchemaError>());
+}

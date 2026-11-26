@@ -541,3 +541,90 @@ fn replacing_pupil_geometry_and_mask_recomputes_scientific_pixel_order() {
         "{invalid_origin}"
     );
 }
+
+#[test]
+fn invalid_shards_leave_reconstruction_output_untouched() {
+    use filtergraph_algorithms::PyramidRowReconstructionError as E;
+    let (_, plan) = plans();
+    let pixels = [4.0; SELECTED_PIXELS];
+    let mut output = [19.0; 2];
+    for (input, columns, first, expected, detail) in [
+        (
+            &pixels[..SELECTED_PIXELS - 1],
+            0..3,
+            0,
+            E::PartitionPixelExtent {
+                expected: SELECTED_PIXELS,
+                actual: SELECTED_PIXELS - 1,
+            },
+            "partition pixel extent",
+        ),
+        (
+            &pixels[..],
+            SELECTED_PIXELS..SELECTED_PIXELS + 1,
+            0,
+            E::PartitionColumnRange,
+            "partition column range",
+        ),
+        (
+            &pixels[..],
+            0..1,
+            RECONSTRUCTED - 1,
+            E::PartitionOutputRange,
+            "partition output range",
+        ),
+        (
+            &pixels[..],
+            0..1,
+            usize::MAX,
+            E::PartitionOutputRange,
+            "partition output range",
+        ),
+    ] {
+        let error = plan
+            .accumulate_reconstruction_partition(input, &mut output, columns, first)
+            .unwrap_err();
+        assert_eq!(error, expected);
+        assert!(error.to_string().contains(detail), "{error}");
+        assert_eq!(output, [19.0; 2]);
+    }
+}
+
+#[test]
+fn nonfinite_row_reconstruction_discards_partial_state_without_replacing_outputs() {
+    use filtergraph_algorithms::PyramidRowReconstructionError as E;
+
+    let (_, plan) = plans();
+    let overflow = plan
+        .with_reconstructor(&[f32::MAX; SELECTED_PIXELS * RECONSTRUCTED])
+        .unwrap();
+    let mut workspace = plan.workspace();
+    let mut reconstruction = [19.0; RECONSTRUCTED];
+    let mut pixels = [19.0; SELECTED_PIXELS];
+    let mut mean = 19.0;
+    let block = [2.0; BLOCK_ROWS * IMAGE_COLUMNS];
+    for row in (0..IMAGE_ROWS).step_by(BLOCK_ROWS) {
+        plan.process_block(
+            PyramidRowReconstructionOutput::new(&mut pixels, &mut mean, &mut reconstruction),
+            &mut workspace,
+            &block,
+            block_info(80, row),
+        )
+        .unwrap();
+    }
+    assert_eq!(mean, 2.0);
+    let published = (pixels, mean, reconstruction);
+    let error = overflow
+        .process_block(
+            PyramidRowReconstructionOutput::new(&mut pixels, &mut mean, &mut reconstruction),
+            &mut workspace,
+            &[8.0; BLOCK_ROWS * IMAGE_COLUMNS],
+            block_info(81, 0),
+        )
+        .unwrap_err();
+    assert_eq!(error, E::NonFiniteReconstruction);
+    assert!(error.to_string().contains("non-finite"));
+    assert_eq!(workspace.sequence(), None);
+    assert_eq!(workspace.reciprocal_previous_frame_mean(), 0.5);
+    assert_eq!((pixels, mean, reconstruction), published);
+}

@@ -563,6 +563,13 @@ impl PluginDeclaration for Scaler {
         }
         Ports::OUT.copy_from(outputs, workspace)?;
         Ports::OUT.copy_metadata_from(outputs, &inputs, Ports::IN)?;
+        if let Some(sample) = inputs.sample_metadata(Ports::IN.index())? {
+            // This fixture tags the final block of a two-block sample.
+            outputs.set_sample_metadata(
+                Ports::OUT.index(),
+                sample.with_offset(1).with_terminal(true),
+            )?;
+        }
         Ports::OUT.finish(outputs, 2)
     }
 
@@ -634,6 +641,30 @@ fn topology_independent_declaration_projects_ports_and_uses_typed_buffers() {
             );
         },
     );
+    let (size, sequence) = with_buffer(
+        &mut result,
+        instance.format(1).unwrap(),
+        Some(0),
+        |output| {
+            with_buffer(
+                &mut [2.0, 3.0],
+                instance.format(0).unwrap(),
+                Some(55),
+                |input| unsafe {
+                    assert_eq!(instance.process(&[input, DISCONNECTED], &mut [output]), 0);
+                    let header = &*(*(*output.buffer).metas).data.cast::<abi::SpaMetaHeader>();
+                    assert_eq!(header.offset, 1);
+                    assert_eq!(
+                        header.flags & abi::META_HEADER_MARKER,
+                        abi::META_HEADER_MARKER
+                    );
+                    assert_eq!(header.pts, 123);
+                },
+            );
+        },
+    );
+    assert_eq!((size, sequence), (8, 55));
+
     assert_eq!(result, [8.0, 12.0]);
     with_buffer(
         &mut result,
@@ -1009,4 +1040,59 @@ mod duplicate_registry {
             assert!(!filtergraph_fgn::registry_is_valid(&[empty]));
         }
     }
+}
+
+#[test]
+fn missing_output_header_fails_without_publishing_a_metadata_dependent_frame() {
+    let instance = Instance::new::<DeclaredPlugin<Scaler>>(c"2").unwrap();
+    let mut result = [71.0; 2];
+    let (size, _) = with_buffer(&mut result, instance.format(1).unwrap(), None, |output| {
+        with_buffer(
+            &mut [3.0, 2.0],
+            instance.format(0).unwrap(),
+            Some(19),
+            |input| {
+                assert_eq!(
+                    unsafe { instance.process(&[input, DISCONNECTED], &mut [output]) },
+                    -abi::ENOENT
+                );
+            },
+        );
+    });
+    assert_eq!(size, 0);
+}
+
+#[test]
+fn short_output_and_misaligned_input_do_not_publish_or_advance_history() {
+    let instance = Instance::new::<FixedGain>(c"2").unwrap();
+    let mut short = [71.0; 1];
+    let input_format = instance.format(0).unwrap();
+    let output_format = instance.format(1).unwrap();
+    let (size, _) = with_buffer(&mut short, output_format, None, |output| {
+        with_buffer(&mut [3.0, 2.0], input_format, None, |input| {
+            assert_eq!(
+                unsafe { instance.process(&[input], &mut [output]) },
+                -abi::ENOSPC
+            );
+        });
+    });
+    assert_eq!((size, short), (0, [71.0]));
+
+    let mut result = [71.0; 2];
+    let (size, _) = with_buffer(&mut result, output_format, None, |output| {
+        with_buffer(&mut [3.0, 2.0, 0.0], input_format, None, |input| unsafe {
+            let chunk = (*(*input.buffer).datas).chunk;
+            (*chunk).offset = 1;
+            (*chunk).size = 8;
+            assert_eq!(instance.process(&[input], &mut [output]), -abi::EINVAL);
+        });
+    });
+    assert_eq!((size, result), (0, [71.0; 2]));
+
+    with_buffer(&mut result, output_format, None, |output| {
+        with_buffer(&mut [3.0, 2.0], input_format, None, |input| {
+            assert_eq!(unsafe { instance.process(&[input], &mut [output]) }, 0);
+        });
+    });
+    assert_eq!(result, [6.0, 4.0]);
 }
