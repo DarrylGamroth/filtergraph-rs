@@ -89,6 +89,7 @@ jobs:
           python3 scripts/test_fgn_declaration.py --debug \
             --fgn-source "$RUNNER_TEMP/pipewireao" --fgn-build "$RUNNER_TEMP/pipewireao/build"
           python3 -m unittest discover -s scripts -p 'test_fgn_software_version.py'
+          python3 -m unittest discover -s scripts -p 'test_install_fgn_bundle.py'
           cargo llvm-cov report --lcov --output-path target/lcov.info \
             --ignore-filename-regex '(^|/)(tests|examples|benches)/'
 

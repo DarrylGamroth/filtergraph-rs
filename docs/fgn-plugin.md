@@ -49,6 +49,14 @@ and several nodes. Installation can instead stage
 `lib/pipewire-ao/filter-graph/libfiltergraph-fgn.so` and render that absolute
 path into `@FILTERGRAPH_FGN_PLUGIN@` templates.
 
+Use `python3 scripts/install_fgn_bundle.py --prefix /usr --destdir /path/to/stage`
+to build and stage the library with its MIT license and dependency notices.
+The installer uses `readelf` to check the library's ELF compiler stamp and
+copies the matching Rust standard-library notices from the selected toolchain.
+For an existing release build, use `--no-build` with the same Rust toolchain
+and `CARGO_TARGET_DIR`. Keep the ELF `.comment` section until staging is
+complete.
+
 The host discovers declarations, creates/configures instances on its control
 path, prepares and connects buffers, activates processing, schedules calls,
 and owns routing and publication. It must quiesce processing before reset,

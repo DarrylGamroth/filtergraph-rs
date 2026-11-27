@@ -16,8 +16,9 @@ with a binary distribution. The installer stages them under
 
 OpenBLAS copyright, conditions and disclaimer are reproduced verbatim in
 `third-party-licenses/OpenBLAS-0.3.32/LICENSE`; bundled reference BLAS, LAPACK
-and related notices are included in the same directory. Rust standard-library
-attribution and license texts are in `third-party-licenses/rust-1.99.1/`.
+and related notices are included in the same directory. The binary installer
+copies Rust's `COPYRIGHT-library.html` and `licenses/` from the matching
+compiler toolchain into `third-party-licenses/rust-<release>/`.
 
 The following resolved normal dependency closure includes procedural macros
 used during compilation. Files are copied verbatim from the locked crate
