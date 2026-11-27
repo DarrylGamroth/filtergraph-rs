@@ -111,10 +111,9 @@ fn specialized_pupil_dispatch_preserves_both_openblas_overflow_outcomes() {
             assert_eq!(actual, expected);
         }
 
-        // The archived Zen 3 OpenBLAS kernel and prototype AVX2 kernel make
+        // The Zen 3 OpenBLAS kernel and specialized pupil kernel make
         // opposite acceptance decisions for these two reduction orders.
         if filtergraph_blas::core_name().eq_ignore_ascii_case("zen")
-            && cfg!(not(target_feature = "avx512f"))
             && let Some(kernel) = filtergraph_blas::pupil_sgemv_kernel(ROWS, COLUMNS)
         {
             let mut unguarded = [0.0; ROWS];

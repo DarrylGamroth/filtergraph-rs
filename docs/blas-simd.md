@@ -1,7 +1,8 @@
 # BLAS and SIMD integration
 
 Optional experimental features select a shape-specialized pupil GEMV and
-compact feedback. Default builds use OpenBLAS and the full feedback matrix.
+compact feedback. Default builds use OpenBLAS for supported dense
+matrix–vector multiplication and use the full feedback matrix.
 
 The `blas` feature selects statically linked OpenBLAS 0.3.32 using the CBLAS
 API and `cblas` 0.5.0 types for prepared Float32 and Float64 matrix/vector multiplication. It is the
@@ -9,6 +10,29 @@ default for the algorithms and production bundle packages; `oxiblas` remains a
 compatibility feature alias. There is no production dependency on Julia.
 Disabling default features retains ordered scalar GEMV and the algorithms
 crate's `no_std` profile. Scientific source still forbids unsafe code.
+
+## Build for AVX2 and FMA
+
+ML LLOWFS inference, SCC pixel residual and chopped-image difference,
+Shack–Hartmann centroiding, and pyramid image normalization run in Rust.
+To select the tested AVX2/FMA paths in the FGN bundle on an x86-64 host that
+supports both features, build with the default Cargo features and these
+compiler flags.
+
+```sh
+RUSTFLAGS="-C target-feature=+avx2,+fma" \
+    cargo build --locked --release -p filtergraph-fgn-bundle
+```
+
+Every machine loading that bundle must support AVX2 and FMA. A generic build
+without these flags keeps the portable Rust paths available. OpenBLAS
+selects its own CPU kernel at runtime independently of the Rust build flags.
+
+The experimental pupil GEMV uses a fixed reduction tree in safe Rust. The
+compiler chooses whether to pack its independent accumulators into 256-bit or
+512-bit vectors. The `experimental-simd-gemv` feature enables this kernel
+for the supported shape and numerical envelope. Other pupil inputs fall back
+to the ordinary matrix–vector path.
 
 ## Boundary and build policy
 
@@ -80,5 +104,4 @@ before checking for nonfinite results and copying to output. It retains input
 validation and separate arithmetic operations. Rejected output remains
 unpublished; scratch contents have no mathematical history. Leaky integration,
 UInt16 pixel calibration and AXPY already emit packed SIMD. Float32 image
-calibration retains its logical-coordinate rejection precedence. ML is outside
-this optimization pass.
+calibration retains its logical-coordinate rejection precedence.
